@@ -44,7 +44,7 @@ micropython_ota.ota_update(
     use_version_prefix=True,
     hard_reset_device=True,
     soft_reset_device=False,
-    timeout=5
+    timeout=15
 )
 
 led.off()
