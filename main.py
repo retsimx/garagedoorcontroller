@@ -26,7 +26,7 @@ async def messages(client):
             result = {
                 "open": False if reed_pin.value() else True
             }
-            await client.publish('garagedoor/get/response', json.dumps(result), qos=0)
+            await client.publish('garagedoor/status/response', json.dumps(result), qos=0)
 
         elif topic.startswith("garagedoor/reset"):
             machine.reset()
