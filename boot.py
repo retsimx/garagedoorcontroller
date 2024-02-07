@@ -19,7 +19,9 @@ rp2.country('AU')
 # Connect to WLAN for a minute before resetting to try again
 wlan = network.WLAN(network.STA_IF)
 wlan.active(True)
+wlan.config(pm=0xA11140)
 wlan.connect(WIFI_SSID, WIFI_PASSWORD)
+
 for _ in range(60):
     if wlan.isconnected():
         break
