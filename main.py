@@ -17,6 +17,10 @@ config['server'] = MQTT_IP
 
 async def messages(client):
     async for topic, msg, retained in client.queue:
+        # Parse the message as JSON to extract UUID
+        payload = json.loads(msg.decode())
+        request_uuid = payload.get("uuid")
+
         if topic.startswith("garagedoor/trigger"):
             door_pin.on()
             sleep_ms(600)
@@ -26,7 +30,13 @@ async def messages(client):
             result = {
                 "open": False if reed_pin.value() else True
             }
-            await client.publish('garagedoor/status/response', json.dumps(result), qos=0)
+            
+            response = {
+                "uuid": request_uuid,
+                "result": result
+            }
+                
+            await client.publish('garagedoor/status/response', json.dumps(response), qos=0)
 
         elif topic.startswith("garagedoor/reset"):
             machine.reset()
