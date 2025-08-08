@@ -1,5 +1,5 @@
 mkdir -p /tmp/firmware
-sshfs root@10.0.1.5:/var/www/firmware /tmp/firmware
+sshfs root@10.0.1.5:/usr/local/www/firmware /tmp/firmware
 
 # Get old and new version numbers
 old_version=`cat /tmp/firmware/garagedoor/version`
