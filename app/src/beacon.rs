@@ -51,7 +51,7 @@ async fn step_connected(control: &'static ControlMutex, current_state: &mut Beac
 
 /// Diagnostic error sequence: `code` pulses (200 ms ON / 200 ms OFF) followed by 1000 ms pause.
 async fn step_error(control: &'static ControlMutex, code: u8, current_state: &mut BeaconState) {
-    let blinks = if code == 0 { 1 } else { code };
+    let blinks = code.max(1);
     for _ in 0..blinks {
         step_led(control, true, Duration::from_millis(200), current_state).await;
         step_led(control, false, Duration::from_millis(200), current_state).await;

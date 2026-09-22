@@ -61,15 +61,15 @@ fn fetch_firmware_blobs(manifest_dir: &Path) {
     let blobs = [
         (
             "43439A0.bin",
-            "https://raw.githubusercontent.com/embassy-rs/embassy/master/cyw43-firmware/43439A0.bin",
+            "https://raw.githubusercontent.com/embassy-rs/embassy/3cd51e6d8eb6aff8b0d64d9e56a75a538bcfc65a/cyw43-firmware/43439A0.bin",
         ),
         (
             "43439A0_clm.bin",
-            "https://raw.githubusercontent.com/embassy-rs/embassy/master/cyw43-firmware/43439A0_clm.bin",
+            "https://raw.githubusercontent.com/embassy-rs/embassy/3cd51e6d8eb6aff8b0d64d9e56a75a538bcfc65a/cyw43-firmware/43439A0_clm.bin",
         ),
         (
             "nvram_rp2040.bin",
-            "https://raw.githubusercontent.com/embassy-rs/embassy/master/cyw43-firmware/nvram_rp2040.bin",
+            "https://raw.githubusercontent.com/embassy-rs/embassy/3cd51e6d8eb6aff8b0d64d9e56a75a538bcfc65a/cyw43-firmware/nvram_rp2040.bin",
         ),
     ];
 
@@ -82,7 +82,11 @@ fn download_blob_if_missing(firmware_dir: &Path, name: &str, url: &str) {
     let dest = firmware_dir.join(name);
     println!("cargo:rerun-if-changed={}", dest.display());
     if dest.exists() {
-        return;
+        let len = fs::metadata(&dest).map(|m| m.len()).unwrap_or(0);
+        if len > 0 {
+            return;
+        }
+        let _ = fs::remove_file(&dest);
     }
 
     let tmp_dest = firmware_dir.join(format!("{name}.tmp"));

@@ -55,11 +55,13 @@ async fn handle_associated(stack: NetStack, backoff: &mut Duration) {
             // Monitor connection link; blocks until link is lost
             stack.wait_link_down().await;
             defmt::warn!("wifi: network link dropped!");
-            beacon::BEACON_SIGNAL.signal(BeaconState::Error(1));
+            // Diagnostic code 2: network link lost
+            beacon::BEACON_SIGNAL.signal(BeaconState::Error(2));
         }
         Err(_) => {
             defmt::warn!("wifi: DHCP configuration timed out");
-            beacon::BEACON_SIGNAL.signal(BeaconState::Error(1));
+            // Diagnostic code 3: DHCP timeout
+            beacon::BEACON_SIGNAL.signal(BeaconState::Error(3));
         }
     }
 }
