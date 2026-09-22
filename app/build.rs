@@ -40,6 +40,7 @@ fn main() {
             secrets_path.display()
         );
     }
+    println!("cargo:rerun-if-changed={}", secrets_path.display());
 
     println!("cargo:rerun-if-changed=build.rs");
 }

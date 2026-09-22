@@ -8,9 +8,3 @@ name = "garagedoor_core"
 path = "src/lib.rs"
 
 [dependencies]
-sha2 = { workspace = true }
-
-[dev-dependencies]
-toml = "0.8"
-serde = { version = "1", features = ["derive"] }
-pollster = "0.4"

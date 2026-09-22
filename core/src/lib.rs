@@ -218,7 +218,7 @@ impl DoorController {
     /// Manually transition the door to `Open` when motion travel finishes.
     pub fn mark_fully_open(&mut self) -> Option<DoorEvent> {
         let old_state = self.state;
-        if self.state != DoorState::Open && self.state != DoorState::Closed {
+        if self.state == DoorState::Opening || self.state == DoorState::Stopped {
             self.state = DoorState::Open;
             Some(DoorEvent::StateTransition {
                 from: old_state,
@@ -405,5 +405,13 @@ mod tests {
             })
         );
         assert_eq!(controller.state(), DoorState::Open);
+    }
+
+    #[test]
+    fn test_mark_fully_open_when_closing() {
+        let mut controller = DoorController::new(DoorState::Closing);
+        let event = controller.mark_fully_open();
+        assert_eq!(event, None);
+        assert_eq!(controller.state(), DoorState::Closing);
     }
 }
