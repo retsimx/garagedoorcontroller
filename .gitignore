@@ -1,2 +1,11 @@
-venv
-.idea
+# Build output
+target/
+
+# Python / legacy
+venv/
+
+# Editor / IDE
+.idea/
+
+# Local secrets materialised from secrets.example.rs
+app/src/secrets.rs

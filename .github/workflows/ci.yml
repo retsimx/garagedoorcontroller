@@ -1,0 +1,111 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+permissions:
+  contents: read
+
+jobs:
+  host:
+    name: host (fmt, clippy, core tests)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: 1.98.1
+          components: rustfmt, clippy, llvm-tools-preview
+          targets: thumbv6m-none-eabi
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Materialise dummy secrets
+        run: cp app/secrets.example.rs app/src/secrets.rs
+
+      - name: Format check
+        run: cargo fmt --all --check
+
+      - name: Clippy (host core, all targets)
+        run: cargo clippy -p garagedoor-core --all-targets --target x86_64-unknown-linux-gnu -- -D warnings
+
+      - name: Core host tests
+        run: cargo test -p garagedoor-core --target x86_64-unknown-linux-gnu
+
+  firmware:
+    name: firmware (thumbv6m build, size gate)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: 1.98.1
+          components: rustfmt, clippy, llvm-tools-preview
+          targets: thumbv6m-none-eabi
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Materialise dummy secrets
+        run: cp app/secrets.example.rs app/src/secrets.rs
+
+      - name: Assert missing secrets.rs fails with an actionable message
+        shell: bash
+        run: |
+          touch app/build.rs
+          mv app/src/secrets.rs /tmp/secrets.rs
+          set +e
+          cargo build --target thumbv6m-none-eabi -p garagedoor-app > /tmp/missing-secrets.log 2>&1
+          CODE=$?
+          set -e
+          mv /tmp/secrets.rs app/src/secrets.rs
+          if [ "$CODE" -eq 0 ]; then
+            echo "::error::build succeeded without app/src/secrets.rs"
+            exit 1
+          fi
+          if ! grep -q "secrets.example.rs" /tmp/missing-secrets.log; then
+            echo "::error::failure message does not name secrets.example.rs"
+            cat /tmp/missing-secrets.log
+            exit 1
+          fi
+
+      - name: Assert build version env var is injected
+        shell: bash
+        run: |
+          touch app/build.rs
+          cargo build -vv --target thumbv6m-none-eabi -p garagedoor-app 2>&1 | tee /tmp/version-build.log
+          grep -Eq "rustc-env=GARAGEDOOR_BUILD_VERSION=$(cat VERSION)([^0-9]|$)" /tmp/version-build.log
+
+      - name: Clippy (workspace, thumbv6m)
+        run: cargo clippy --workspace --target thumbv6m-none-eabi -- -D warnings
+
+      - name: Release build (workspace, thumbv6m)
+        run: cargo build --release --target thumbv6m-none-eabi --workspace
+
+      - name: Install cargo-binutils
+        run: cargo install cargo-binutils --locked
+
+      - name: Size gate (app, text + data <= 780 KiB)
+        shell: bash
+        run: |
+          # 798720 = 780 * 1024 bytes. Active application partition flash limit.
+          SIZE=$(cargo size --release --target thumbv6m-none-eabi -p garagedoor-app | awk '/garagedoor-app$/ {print $1+$2}')
+          echo "firmware size (text+data): $SIZE bytes (budget 798720)"
+          test "$SIZE" -le 798720
+
+      - name: Size gate (bootloader, text + data <= 23.75 KiB)
+        shell: bash
+        run: |
+          # 24320 = 24 KiB - 256 B boot2. Dedicated bootloader partition flash limit.
+          SIZE=$(cargo size --release --target thumbv6m-none-eabi -p garagedoor-bootloader | awk '/garagedoor-bootloader$/ {print $1+$2}')
+          echo "bootloader size (text+data): $SIZE bytes (budget 24320)"
+          test "$SIZE" -le 24320

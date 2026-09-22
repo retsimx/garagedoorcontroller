@@ -1,0 +1,24 @@
+[package]
+name = "garagedoor-app"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "garagedoor-app"
+path = "src/main.rs"
+
+[dependencies]
+garagedoor-core = { workspace = true }
+
+[target.'cfg(target_arch = "arm")'.dependencies]
+embassy-rp = { workspace = true, features = ["rp2040", "critical-section-impl", "time-driver", "boot2-none"] }
+embassy-executor = { workspace = true, features = ["platform-cortex-m", "executor-thread", "executor-interrupt", "defmt"] }
+embassy-time = { workspace = true, features = ["defmt"] }
+embassy-sync = { workspace = true, features = ["defmt"] }
+static_cell = { workspace = true }
+portable-atomic = { version = "1.5", features = ["critical-section"] }
+defmt = { workspace = true }
+defmt-rtt = { workspace = true }
+panic-probe = { workspace = true }
+cortex-m = { workspace = true }
+cortex-m-rt = { workspace = true }
