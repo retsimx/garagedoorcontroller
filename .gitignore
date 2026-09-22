@@ -9,3 +9,6 @@ venv/
 
 # Local secrets materialised from secrets.example.rs
 app/src/secrets.rs
+
+# Proprietary CYW43 wireless firmware blobs
+app/firmware/

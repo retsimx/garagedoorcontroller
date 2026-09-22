@@ -6,8 +6,11 @@ use panic_probe as _;
 
 use embassy_executor::Spawner;
 
+mod beacon;
+mod radio;
 #[allow(dead_code)]
 mod secrets;
+mod wifi;
 
 /// Parse a bare ASCII integer at compile time.
 const fn parse_u32(s: &str) -> u32 {
@@ -26,8 +29,8 @@ const fn parse_u32(s: &str) -> u32 {
 pub const VERSION: u32 = parse_u32(env!("GARAGEDOOR_BUILD_VERSION"));
 
 #[embassy_executor::main]
-async fn main(_spawner: Spawner) {
-    let _p = embassy_rp::init(Default::default());
+async fn main(spawner: Spawner) {
+    let p = embassy_rp::init(Default::default());
 
     defmt::info!("garagedoor-app starting, version={}", VERSION);
     defmt::info!("garagedoor-app peripherals initialized");
@@ -37,4 +40,20 @@ async fn main(_spawner: Spawner) {
         "initial door state: {:?}",
         defmt::Debug2Format(&controller.state())
     );
+
+    let radio_peripherals = radio::RadioPeripherals {
+        pwr: p.PIN_23,
+        cs: p.PIN_25,
+        dio: p.PIN_24,
+        clk: p.PIN_29,
+        pio: p.PIO0,
+        dma_ch0: p.DMA_CH0,
+        dma_ch1: p.DMA_CH1,
+    };
+
+    let (control, stack) = radio::init(spawner, radio_peripherals).await;
+    defmt::info!("radio and network stack initialized");
+
+    spawner.spawn(defmt::unwrap!(beacon::beacon_task(control)));
+    spawner.spawn(defmt::unwrap!(wifi::wifi_supervisor_task(control, stack)));
 }
