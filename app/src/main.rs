@@ -15,6 +15,7 @@ mod radio;
 #[allow(dead_code)]
 mod secrets;
 mod sensor;
+mod telemetry;
 pub mod update;
 mod wifi;
 
@@ -76,6 +77,7 @@ async fn main(spawner: Spawner) {
 
     spawner.spawn(defmt::unwrap!(beacon::beacon_task(control)));
     spawner.spawn(defmt::unwrap!(wifi::wifi_supervisor_task(control, stack)));
+    spawner.spawn(defmt::unwrap!(telemetry::telemetry_task(stack)));
 }
 
 #[embassy_executor::task]
