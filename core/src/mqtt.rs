@@ -204,9 +204,21 @@ impl<'a> Scanner<'a> {
                     return core::str::from_utf8(&self.bytes[start..end])
                         .map_err(|_| StatusRequestError::Malformed);
                 }
-                b'\\' => {
-                    self.next().ok_or(StatusRequestError::Malformed)?;
-                }
+                b'\\' => match self.next().ok_or(StatusRequestError::Malformed)? {
+                    b'"' | b'\\' | b'/' | b'b' | b'f' | b'n' | b'r' | b't' => {}
+                    b'u' => {
+                        for _ in 0..4 {
+                            let digit = self.next().ok_or(StatusRequestError::Malformed)?;
+                            if !digit.is_ascii_hexdigit() {
+                                return Err(StatusRequestError::Malformed);
+                            }
+                        }
+                    }
+                    _ => return Err(StatusRequestError::Malformed),
+                },
+                // Unescaped control characters are invalid in JSON strings and
+                // would otherwise be echoed verbatim into the response payload.
+                0x00..=0x1f => return Err(StatusRequestError::Malformed),
                 _ => {}
             }
         }

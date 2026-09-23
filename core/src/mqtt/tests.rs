@@ -137,6 +137,42 @@ fn parse_rejects_unterminated_object() {
 }
 
 #[test]
+fn parse_rejects_only_nested_uuid() {
+    assert_eq!(
+        parse_status_request(br#"{"a":{"uuid":"x"}}"#),
+        Err(StatusRequestError::MissingUuid)
+    );
+}
+
+#[test]
+fn parse_rejects_invalid_escape() {
+    assert_eq!(
+        parse_status_request(br#"{"uuid":"a\qb"}"#),
+        Err(StatusRequestError::Malformed)
+    );
+}
+
+#[test]
+fn parse_rejects_raw_control_char() {
+    assert_eq!(
+        parse_status_request(b"{\"uuid\":\"a\nb\"}"),
+        Err(StatusRequestError::Malformed)
+    );
+}
+
+#[test]
+fn parse_rejects_incomplete_unicode_escape() {
+    assert_eq!(
+        parse_status_request(br#"{"uuid":"a\u12"}"#),
+        Err(StatusRequestError::Malformed)
+    );
+    assert_eq!(
+        parse_status_request(br#"{"uuid":"a\u12g4"}"#),
+        Err(StatusRequestError::Malformed)
+    );
+}
+
+#[test]
 fn format_onchange_false_exact_bytes() {
     let mut buf = [0u8; 32];
     assert_eq!(format_onchange(&mut buf, false), Ok(r#"{"open":false}"#));
