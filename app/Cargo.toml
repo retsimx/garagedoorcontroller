@@ -18,6 +18,10 @@ embassy-sync = { workspace = true, features = ["defmt"] }
 cyw43 = { workspace = true, features = ["defmt"] }
 cyw43-pio = { workspace = true, features = ["defmt"] }
 embassy-net = { workspace = true, features = ["defmt", "dhcpv4", "dns", "medium-ethernet", "proto-ipv4"] }
+embassy-boot = { workspace = true }
+embassy-embedded-hal = { workspace = true }
+embedded-storage = { workspace = true }
+embedded-storage-async = { workspace = true }
 static_cell = { workspace = true }
 portable-atomic = { version = "1.5", features = ["critical-section"] }
 defmt = { workspace = true }

@@ -10,9 +10,11 @@ path = "src/main.rs"
 [dependencies]
 embassy-rp = { workspace = true, features = ["rp2040", "critical-section-impl"] }
 embassy-boot-rp = { workspace = true }
+embassy-boot = { workspace = true }
 embassy-sync = { workspace = true }
 embassy-time = { workspace = true }
 cortex-m = { workspace = true }
 cortex-m-rt = { workspace = true }
 defmt = { workspace = true }
 defmt-rtt = { workspace = true }
+garagedoor-core = { workspace = true }

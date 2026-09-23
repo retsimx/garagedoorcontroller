@@ -880,11 +880,15 @@ dependencies = [
  "cyw43-pio",
  "defmt",
  "defmt-rtt",
+ "embassy-boot",
+ "embassy-embedded-hal 0.6.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "embassy-executor",
  "embassy-net",
  "embassy-rp",
  "embassy-sync",
  "embassy-time",
+ "embedded-storage",
+ "embedded-storage-async",
  "garagedoor-core",
  "panic-probe",
  "portable-atomic",
@@ -899,10 +903,12 @@ dependencies = [
  "cortex-m-rt",
  "defmt",
  "defmt-rtt",
+ "embassy-boot",
  "embassy-boot-rp",
  "embassy-rp",
  "embassy-sync",
  "embassy-time",
+ "garagedoor-core",
 ]
 
 [[package]]
