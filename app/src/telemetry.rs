@@ -253,7 +253,17 @@ pub async fn telemetry_task(stack: NetStack) -> ! {
             let action = {
                 let next = select(conn.recv(), DOOR_STATE_SIGNAL.wait()).await;
                 match next {
-                    Either::First(Ok(message)) => classify(message.topic(), message.payload()),
+                    Either::First(Ok(message)) => {
+                        if message.retained() {
+                            defmt::warn!(
+                                "mqtt: ignoring retained message on '{}'",
+                                message.topic()
+                            );
+                            Action::Unknown
+                        } else {
+                            classify(message.topic(), message.payload())
+                        }
+                    }
                     Either::First(Err(err)) => {
                         defmt::warn!("mqtt: receive failed: {:?}", defmt::Debug2Format(&err));
                         Action::Disconnected

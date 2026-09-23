@@ -12,9 +12,11 @@
 #![allow(async_fn_in_trait)]
 
 mod http;
+pub mod selftest;
 mod session;
 
 pub use http::{HeadError, HeadEvent, HeadParser, ResponseHead};
+pub use selftest::{evaluate, SelfTestDecision, SelfTestSignals, SELF_TEST_WINDOW_MS};
 pub use session::{apply_update, BodyReader, Flasher, UpdateError};
 
 /// Streaming chunk size for the OTA body (4 KiB, matching the RP2040 flash page).

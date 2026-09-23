@@ -4,10 +4,13 @@
 use defmt_rtt as _;
 use panic_probe as _;
 
+use embassy_boot::State;
 use embassy_executor::Spawner;
 use embassy_rp::gpio::{Input, Level, Output, Pull};
-use embassy_rp::watchdog::{ResetReason, Watchdog};
-use embassy_time::{Duration, Timer};
+use embassy_time::{with_timeout, Duration};
+use garagedoor_core::ota::selftest::{
+    evaluate, SelfTestDecision, SelfTestSignals, SELF_TEST_WINDOW_MS,
+};
 
 mod actuator;
 mod beacon;
@@ -19,6 +22,7 @@ mod secrets;
 mod sensor;
 mod telemetry;
 pub mod update;
+mod watchdog;
 mod wifi;
 
 /// Parse a bare ASCII integer at compile time.
@@ -45,23 +49,59 @@ async fn main(spawner: Spawner) {
 
     let p = embassy_rp::init(Default::default());
 
-    let mut wd = Watchdog::new(p.WATCHDOG);
-    let reset_reason = match wd.reset_reason() {
-        Some(ResetReason::Forced) => "watchdog-forced",
-        Some(ResetReason::TimedOut) => "watchdog-timeout",
-        None => "power-on-or-debugger",
-    };
+    // Arm the watchdog before any driver initialisation, then feed it forever.
+    watchdog::init(p.WATCHDOG);
+    spawner.spawn(defmt::unwrap!(watchdog::feeder_task()));
 
     defmt::info!("garagedoor-app starting, version={}", VERSION);
-    defmt::info!("reset_reason={}", reset_reason);
-    defmt::info!("garagedoor-app peripherals initialized");
 
-    wd.start(update::WATCHDOG_TIMEOUT);
-    update::init_watchdog(wd);
-    spawner.spawn(defmt::unwrap!(watchdog_task()));
-
+    // Deassert the relay as the first actuator action on every boot.
     let relay = Output::new(p.PIN_18, Level::Low);
+
+    // Deliberately-faulty image for automated rollback verification.
+    #[cfg(feature = "selftest-broken")]
+    panic!("simulated boot failure");
+
     let reed = Input::new(p.PIN_21, Pull::Up);
+
+    // Boot disposition, read once from the embassy-boot state.
+    let mut updater = update::Updater::new(p.FLASH);
+    let boot_state = updater.get_state().await;
+    let is_swap = matches!(boot_state, Ok(State::Swap));
+    let is_revert = matches!(boot_state, Ok(State::Revert));
+    if is_revert {
+        // Deliberate: do NOT clear the REVERT marker here. `mark_booted()`
+        // would normalise the state to `Boot`, so the next reset would see
+        // `is_revert == false` and re-download the same failed image — the
+        // retry loop returns. Leaving the marker set keeps the boot check
+        // suppressed until a manual `garagedoor/reset` performs a successful
+        // update (which sets SWAP magic and eventually BOOT on confirmation).
+        defmt::warn!("ota_previous_image_restored");
+    }
+
+    // Mandatory hardware checks — read-only on GPIO 18 — only on a swap.
+    let mut signals = SelfTestSignals {
+        relay_ok: true,
+        reed_ok: true,
+        network_ok: false,
+    };
+    if is_swap {
+        signals.relay_ok = relay.is_set_low();
+        // `is_low()` and `is_high()` are infallible and mutually exclusive, so
+        // this is always true; it proves the pin is configured and readable,
+        // not that the switch is healthy.
+        signals.reed_ok = reed.is_low() || reed.is_high();
+        if evaluate(&signals) == SelfTestDecision::Revert {
+            defmt::error!(
+                "selftest_hw_fail relay={} reed={}",
+                signals.relay_ok,
+                signals.reed_ok
+            );
+            revert_hang();
+        }
+    }
+
+    // Door control is live before any network wait.
     spawner.spawn(defmt::unwrap!(actuator::actuator_task(
         relay,
         actuator::DOOR_CMD_CHANNEL.receiver()
@@ -79,20 +119,44 @@ async fn main(spawner: Spawner) {
     };
 
     let (control, stack) = radio::init(spawner, radio_peripherals).await;
+
     defmt::info!("radio and network stack initialized");
 
     spawner.spawn(defmt::unwrap!(beacon::beacon_task(control)));
     spawner.spawn(defmt::unwrap!(wifi::wifi_supervisor_task(control, stack)));
     spawner.spawn(defmt::unwrap!(telemetry::telemetry_task(stack)));
 
-    let updater = update::Updater::new(p.FLASH);
-    ota::spawn(spawner, stack, updater);
+    // Best-effort network check, then confirm or revert.
+    if is_swap {
+        signals.network_ok = with_timeout(
+            Duration::from_millis(SELF_TEST_WINDOW_MS),
+            stack.wait_config_up(),
+        )
+        .await
+        .is_ok();
+        match evaluate(&signals) {
+            SelfTestDecision::Commit => {
+                defmt::info!("selftest_passed network={}", signals.network_ok);
+                match updater.mark_booted().await {
+                    Ok(()) => defmt::info!("ota_booted"),
+                    // Confirmation failed, so the image stays unconfirmed and the
+                    // bootloader will revert it on the next reset. Keep running so
+                    // door control stays available until then.
+                    Err(_) => defmt::error!("ota_mark_booted_failed"),
+                }
+            }
+            SelfTestDecision::Revert => revert_hang(),
+        }
+    }
+
+    ota::spawn(spawner, stack, updater, !is_revert);
 }
 
-#[embassy_executor::task]
-async fn watchdog_task() -> ! {
+/// Stop feeding the watchdog and spin so the 8 s hardware watchdog resets the
+/// MCU; the bootloader then reverts the unconfirmed image.
+fn revert_hang() -> ! {
+    defmt::error!("selftest_revert_hang");
     loop {
-        update::feed(update::WATCHDOG_TIMEOUT);
-        Timer::after(Duration::from_millis(500)).await;
+        core::hint::spin_loop();
     }
 }
