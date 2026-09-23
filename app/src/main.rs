@@ -5,13 +5,16 @@ use defmt_rtt as _;
 use panic_probe as _;
 
 use embassy_executor::Spawner;
+use embassy_rp::gpio::{Input, Level, Output, Pull};
 use embassy_rp::watchdog::{ResetReason, Watchdog};
 use embassy_time::{Duration, Timer};
 
+mod actuator;
 mod beacon;
 mod radio;
 #[allow(dead_code)]
 mod secrets;
+mod sensor;
 pub mod update;
 mod wifi;
 
@@ -50,11 +53,13 @@ async fn main(spawner: Spawner) {
     update::init_watchdog(wd);
     spawner.spawn(defmt::unwrap!(watchdog_task()));
 
-    let controller = garagedoor_core::DoorController::new(garagedoor_core::DoorState::Closed);
-    defmt::info!(
-        "initial door state: {:?}",
-        defmt::Debug2Format(&controller.state())
-    );
+    let relay = Output::new(p.PIN_18, Level::Low);
+    let reed = Input::new(p.PIN_21, Pull::Up);
+    spawner.spawn(defmt::unwrap!(actuator::actuator_task(
+        relay,
+        actuator::DOOR_CMD_CHANNEL.receiver()
+    )));
+    spawner.spawn(defmt::unwrap!(sensor::sensor_task(reed)));
 
     let radio_peripherals = radio::RadioPeripherals {
         pwr: p.PIN_23,
