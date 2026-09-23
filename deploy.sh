@@ -146,6 +146,19 @@ for var in DEPLOY_PUBLISH_HOST DEPLOY_PUBLISH_PATH DEPLOY_PROJECT DEPLOY_MQTT_BR
   fi
 done
 
+# Reject values that would escape the intended remote directory or be parsed as
+# ssh/scp options. DEPLOY_PROJECT must be a single path segment matching the
+# device's own project charset ([A-Za-z0-9._-]); a `/` or `..` would publish to
+# a path the firmware can never read and could steer the remote prune outside
+# the firmware root. A leading `-` on the host would be read by OpenSSH as an
+# option rather than a hostname.
+case "$DEPLOY_PROJECT" in
+  ''|.|..|*[!A-Za-z0-9._-]*|*..*) die "DEPLOY_PROJECT must be a single safe directory name (letters, digits, '.', '_', '-'): $DEPLOY_PROJECT" ;;
+esac
+case "$DEPLOY_PUBLISH_HOST" in
+  -*) die "DEPLOY_PUBLISH_HOST must not begin with a hyphen: $DEPLOY_PUBLISH_HOST" ;;
+esac
+
 DEPLOY_TRIGGER_TOPIC="${DEPLOY_TRIGGER_TOPIC:-garagedoor/reset}"
 DEPLOY_TRIGGER_PAYLOAD="${DEPLOY_TRIGGER_PAYLOAD:-reset}"
 
@@ -168,7 +181,7 @@ size="$(wc -c < "$BIN")"
 [ "$size" -gt 0 ] || die "extracted image is empty: $BIN"
 [ "$size" -le "$MAX_IMAGE_BYTES" ] || die "extracted image is $size bytes, over the $MAX_IMAGE_BYTES-byte ACTIVE-slot budget"
 
-text_data="$(cargo size --release --target "$TARGET" -p "$APP_PACKAGE" | awk '/garagedoor-app$/ {print $1+$2}')"
+text_data="$(cargo size --release --target "$TARGET" -p "$APP_PACKAGE" | awk -v pkg="$APP_PACKAGE" '$NF == pkg {print $1+$2}')"
 printf 'image size: %s bytes (file), %s bytes (cargo size text+data), budget %s\n' \
   "$size" "$text_data" "$MAX_IMAGE_BYTES"
 
@@ -185,15 +198,20 @@ printf '  remote dir:      %s:%s\n' "$DEPLOY_PUBLISH_HOST" "$REMOTE_DIR"
 printf '  remote image:    %s:%s\n' "$DEPLOY_PUBLISH_HOST" "$REMOTE_BIN"
 printf '  remote checksum: %s:%s\n' "$DEPLOY_PUBLISH_HOST" "$REMOTE_SHA"
 
-# 6. Ensure the remote directory exists.
-run ssh "$DEPLOY_PUBLISH_HOST" "mkdir -p -- $(shell_quote "$REMOTE_DIR")"
+# 6. Ensure the remote directory exists and is web-traversable. The published
+#    files must be readable by the web server regardless of the SSH user's
+#    umask, or nginx returns 403 to the OTA client.
+run ssh "$DEPLOY_PUBLISH_HOST" "mkdir -p -- $(shell_quote "$REMOTE_DIR") && chmod 755 $(shell_quote "$REMOTE_DIR")"
 
-# 7. Copy the image, then its checksum.
+# 7. Copy the image, then its checksum, and make both web-readable.
 run scp "$BIN" "$DEPLOY_PUBLISH_HOST:$REMOTE_BIN"
 run scp "$SHA" "$DEPLOY_PUBLISH_HOST:$REMOTE_SHA"
+run ssh "$DEPLOY_PUBLISH_HOST" "chmod 644 $(shell_quote "$REMOTE_BIN") $(shell_quote "$REMOTE_SHA")"
 
-# 8. Publish `version` LAST: it is the commit point the device polls.
-run ssh "$DEPLOY_PUBLISH_HOST" "printf '%s\n' $(shell_quote "$VERSION") > $(shell_quote "$REMOTE_DIR/version")"
+# 8. Publish `version` LAST: it is the commit point the device polls. Write a
+#    temp file and rename it into place so a concurrent poll never observes a
+#    truncated (empty) version.
+run ssh "$DEPLOY_PUBLISH_HOST" "printf '%s\n' $(shell_quote "$VERSION") > $(shell_quote "$REMOTE_DIR/version.tmp") && chmod 644 $(shell_quote "$REMOTE_DIR/version.tmp") && mv -f $(shell_quote "$REMOTE_DIR/version.tmp") $(shell_quote "$REMOTE_DIR/version")"
 
 # 9. Prune older pairs on the remote (best-effort): keep the current version and
 #    the largest version strictly below it, delete every other .bin/.bin.sha256
