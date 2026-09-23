@@ -10,5 +10,8 @@ venv/
 # Local secrets materialised from secrets.example.rs
 app/src/secrets.rs
 
+# Local release targets/credentials (never commit)
+/.env.deploy
+
 # Proprietary CYW43 wireless firmware blobs
 app/firmware/
