@@ -11,6 +11,8 @@ use embassy_time::{Duration, Timer};
 
 mod actuator;
 mod beacon;
+mod heap;
+mod ota;
 mod radio;
 #[allow(dead_code)]
 mod secrets;
@@ -37,6 +39,10 @@ pub const VERSION: u32 = parse_u32(env!("GARAGEDOOR_BUILD_VERSION"));
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
+    // The static heap must be ready before anything can allocate: embedded-tls's
+    // RSA handshake verification allocates.
+    heap::init();
+
     let p = embassy_rp::init(Default::default());
 
     let mut wd = Watchdog::new(p.WATCHDOG);
@@ -78,6 +84,9 @@ async fn main(spawner: Spawner) {
     spawner.spawn(defmt::unwrap!(beacon::beacon_task(control)));
     spawner.spawn(defmt::unwrap!(wifi::wifi_supervisor_task(control, stack)));
     spawner.spawn(defmt::unwrap!(telemetry::telemetry_task(stack)));
+
+    let updater = update::Updater::new(p.FLASH);
+    ota::spawn(spawner, stack, updater);
 }
 
 #[embassy_executor::task]
