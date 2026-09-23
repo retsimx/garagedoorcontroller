@@ -307,8 +307,8 @@ impl UpdateStateMachine {
 
     /// Stage a new firmware binary version into the DFU partition.
     pub fn stage_firmware(&mut self, version: u32, size_bytes: u32) -> Result<(), &'static str> {
-        if !can_fit_in_dfu(size_bytes) {
-            return Err("firmware binary exceeds DFU partition capacity");
+        if !can_fit_in_active(size_bytes) {
+            return Err("firmware binary exceeds active partition capacity");
         }
         self.staged_version = Some(version);
         Ok(())

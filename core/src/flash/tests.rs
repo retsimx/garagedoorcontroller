@@ -284,8 +284,8 @@ fn test_state_machine_validation_guards() {
     // Cannot mark updated without staged firmware
     assert!(sm.mark_updated().is_err());
 
-    // Reject firmware exceeding DFU partition capacity
-    assert!(sm.stage_firmware(2, DFU_BYTES + 1).is_err());
+    // Reject firmware exceeding active partition capacity
+    assert!(sm.stage_firmware(2, ACTIVE_BYTES + 1).is_err());
 
     // Stage valid firmware and mark updated
     assert!(sm.stage_firmware(2, 100 * 1024).is_ok());

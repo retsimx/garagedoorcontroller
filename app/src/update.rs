@@ -129,6 +129,9 @@ impl NorFlash for DfuFlash {
 
     async fn erase(&mut self, from: u32, to: u32) -> Result<(), Self::Error> {
         let page = embassy_rp::flash::ERASE_SIZE as u32;
+        if !from.is_multiple_of(page) || !to.is_multiple_of(page) {
+            return Err(embassy_rp::flash::Error::Unaligned);
+        }
         let mut addr = from;
         while addr < to {
             feed(WATCHDOG_TIMEOUT);
