@@ -36,13 +36,16 @@ pub async fn sensor_task(mut reed: Input<'static>) -> ! {
         if debouncer.is_pending() {
             Timer::after(Duration::from_millis(REED_DEBOUNCE_MS as u64)).await;
         } else {
-            // Bounded edge wait: re-sample at least every debounce interval so an
-            // edge that lands between the sample above and the wait is never lost.
-            let _ = with_timeout(
-                Duration::from_millis(REED_DEBOUNCE_MS as u64),
-                reed.wait_for_any_edge(),
-            )
-            .await;
+            // Level wait derived from the last sample: a level wait resolves
+            // immediately if the pin has already moved, so an edge landing between
+            // the sample above and the wait can never be lost. The timeout still
+            // re-samples at least every debounce interval as a safety net.
+            let debounce = Duration::from_millis(REED_DEBOUNCE_MS as u64);
+            if closed {
+                let _ = with_timeout(debounce, reed.wait_for_high()).await;
+            } else {
+                let _ = with_timeout(debounce, reed.wait_for_low()).await;
+            }
         }
     }
 }

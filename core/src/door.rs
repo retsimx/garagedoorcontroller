@@ -162,15 +162,18 @@ impl ReedDebouncer {
             return None;
         }
 
-        let stable = matches!(
-            self.pending,
-            Some((state, since_ms))
-                if state == desired && now_ms.saturating_sub(since_ms) >= REED_DEBOUNCE_MS as u64
-        );
-        if stable {
-            self.committed = desired;
-            self.pending = None;
-            return Some(desired);
+        // Preserve the candidate start time across repeated matching samples so
+        // debounce means "continuously the same level for REED_DEBOUNCE_MS",
+        // independent of how frequently the caller samples.
+        if let Some((state, since_ms)) = self.pending {
+            if state == desired {
+                if now_ms.saturating_sub(since_ms) >= REED_DEBOUNCE_MS as u64 {
+                    self.committed = desired;
+                    self.pending = None;
+                    return Some(desired);
+                }
+                return None;
+            }
         }
 
         self.pending = Some((desired, now_ms));

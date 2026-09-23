@@ -47,10 +47,12 @@ pub async fn actuator_task(
                     Ok(action) => {
                         apply(&mut relay, action);
                         Timer::after(Duration::from_millis(RELAY_PULSE_MS as u64)).await;
-                        if let Some(action) = interlock.poll(now_ms()) {
-                            apply(&mut relay, action);
-                            defmt::info!("relay pulse complete");
-                        }
+                        // De-assert unconditionally once the pulse window has elapsed
+                        // so a sub-tick boundary can never leave the relay asserted,
+                        // then reconcile the interlock to arm the cooldown.
+                        apply(&mut relay, RelayAction::DeassertLow);
+                        let _ = interlock.poll(now_ms());
+                        defmt::info!("relay pulse complete");
                     }
                     Err(reason) => {
                         // Interlock holds: leave the pin untouched.
