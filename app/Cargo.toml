@@ -17,9 +17,10 @@ embassy-time = { workspace = true, features = ["defmt"] }
 embassy-sync = { workspace = true, features = ["defmt"] }
 cyw43 = { workspace = true, features = ["defmt"] }
 cyw43-pio = { workspace = true, features = ["defmt"] }
-embassy-net = { workspace = true, features = ["defmt", "dhcpv4", "dns", "medium-ethernet", "proto-ipv4"] }
+embassy-net = { workspace = true, features = ["defmt", "dhcpv4", "dns", "medium-ethernet", "proto-ipv4", "tcp"] }
 embassy-boot = { workspace = true }
 embassy-embedded-hal = { workspace = true }
+embassy-futures = "0.1"
 embedded-storage = { workspace = true }
 embedded-storage-async = { workspace = true }
 static_cell = { workspace = true }
@@ -29,3 +30,4 @@ defmt-rtt = { workspace = true }
 panic-probe = { workspace = true }
 cortex-m = { workspace = true }
 cortex-m-rt = { workspace = true }
+minimq = { workspace = true }
