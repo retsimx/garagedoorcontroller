@@ -7,6 +7,11 @@ edition = "2021"
 name = "garagedoor-app"
 path = "src/main.rs"
 
+[features]
+# Build a deliberately faulty image that panics before mark_booted() so the
+# watchdog reverts it (bench rollback verification). Never enabled in CI.
+selftest-broken = []
+
 [dependencies]
 garagedoor-core = { workspace = true }
 

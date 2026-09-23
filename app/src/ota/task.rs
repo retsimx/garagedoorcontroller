@@ -1,6 +1,7 @@
 //! OTA task: resolve, fetch, verify and (only then) commit an update.
 //!
-//! The task runs one check at boot (once DHCP is up) and then one per
+//! The task runs one check at boot (once DHCP is up) unless the bootloader just
+//! reverted an image, then one per
 //! [`crate::telemetry::RESET_REQUEST_SIGNAL`] notification; there is no
 //! periodic poll. A failed check is logged and signals the onboard beacon; the
 //! task never resets on failure. The control path is never blocked: every
@@ -24,13 +25,22 @@ const VERSION_MAX_BYTES: usize = 64;
 const SHA_MAX_BYTES: usize = 128;
 const NAME_MAX_BYTES: usize = 48;
 
-/// One boot check after DHCP, then one check per reset request. The task owns
-/// `updater` for the life of the program and only touches flash after a
-/// response head and a hash have been accepted. A failed check blinks its
-/// stage code on the onboard LED so a human can report it without a probe.
+/// One boot check after DHCP (unless the bootloader just reverted an image),
+/// then one check per reset request. The task owns `updater` for the life of the
+/// program and only touches flash after a response head and a hash have been
+/// accepted. A failed check blinks its stage code on the onboard LED so a human
+/// can report it without a probe.
 #[embassy_executor::task]
-pub(super) async fn ota_task(stack: NetStack, mut updater: update::Updater) -> ! {
-    run_check(stack, &mut updater).await;
+pub(super) async fn ota_task(
+    stack: NetStack,
+    mut updater: update::Updater,
+    boot_check_allowed: bool,
+) -> ! {
+    if boot_check_allowed {
+        run_check(stack, &mut updater).await;
+    } else {
+        defmt::info!("ota_boot_check_skipped_after_revert");
+    }
     loop {
         crate::telemetry::RESET_REQUEST_SIGNAL.wait().await;
         run_check(stack, &mut updater).await;

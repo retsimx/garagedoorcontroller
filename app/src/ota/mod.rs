@@ -8,7 +8,8 @@
 //!   verifier), the HTTP/1.0 GET request/response and the body adapter,
 //! - [`task`] — the `ota_task` and the `check_and_update` orchestration.
 //!
-//! The task runs one check at boot (after DHCP) and one per
+//! The task runs one check at boot (after DHCP) unless the bootloader just
+//! reverted an image, then one per
 //! [`crate::telemetry::RESET_REQUEST_SIGNAL`] notification; there is no periodic
 //! poll. The control path is never blocked: every network wait is a
 //! timeout-wrapped await, and flash is touched only after a response head and a
@@ -26,8 +27,16 @@ use task::ota_task;
 
 /// Spawn the OTA task. The task owns `updater` for the life of the program and
 /// only touches flash after a response head and a hash have been accepted.
-pub fn spawn(spawner: Spawner, stack: NetStack, updater: update::Updater) {
-    spawner.spawn(defmt::unwrap!(ota_task(stack, updater)));
+/// `boot_check_allowed` is `false` when the bootloader just reverted an image,
+/// which suppresses the automatic boot check and breaks the update loop; a
+/// manual `garagedoor/reset` still checks.
+pub fn spawn(
+    spawner: Spawner,
+    stack: NetStack,
+    updater: update::Updater,
+    boot_check_allowed: bool,
+) {
+    spawner.spawn(defmt::unwrap!(ota_task(stack, updater, boot_check_allowed)));
 }
 
 /// A fixed-capacity `core::fmt::Write` sink for requests and short names.

@@ -19,9 +19,10 @@ pub use mqtt::{
     TOPIC_ONCHANGE, TOPIC_RESET, TOPIC_STATUS, TOPIC_STATUS_RESPONSE, TOPIC_TRIGGER,
 };
 pub use ota::{
-    apply_update, base64, basic_authorization, decide, parse_sha256_hex, parse_url, parse_version,
-    BodyReader, Decision, Flasher, HeadError, HeadEvent, HeadParser, ResponseHead, UpdateError,
-    Uri, UrlError, CHUNK_BYTES,
+    apply_update, base64, basic_authorization, decide, evaluate, parse_sha256_hex, parse_url,
+    parse_version, BodyReader, Decision, Flasher, HeadError, HeadEvent, HeadParser, ResponseHead,
+    SelfTestDecision, SelfTestSignals, UpdateError, Uri, UrlError, CHUNK_BYTES,
+    SELF_TEST_WINDOW_MS,
 };
 
 #[cfg(test)]
