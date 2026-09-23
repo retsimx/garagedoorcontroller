@@ -139,6 +139,9 @@ async fn main(spawner: Spawner) {
                 defmt::info!("selftest_passed network={}", signals.network_ok);
                 match updater.mark_booted().await {
                     Ok(()) => defmt::info!("ota_booted"),
+                    // Confirmation failed, so the image stays unconfirmed and the
+                    // bootloader will revert it on the next reset. Keep running so
+                    // door control stays available until then.
                     Err(_) => defmt::error!("ota_mark_booted_failed"),
                 }
             }

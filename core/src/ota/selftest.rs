@@ -95,6 +95,22 @@ mod tests {
     }
 
     #[test]
+    fn compound_hardware_and_network_failure_reverts() {
+        assert_eq!(
+            evaluate(&signals(false, true, false)),
+            SelfTestDecision::Revert
+        );
+        assert_eq!(
+            evaluate(&signals(true, false, false)),
+            SelfTestDecision::Revert
+        );
+        assert_eq!(
+            evaluate(&signals(false, false, false)),
+            SelfTestDecision::Revert
+        );
+    }
+
+    #[test]
     fn window_is_thirty_seconds() {
         assert_eq!(SELF_TEST_WINDOW_MS, 30_000);
     }
