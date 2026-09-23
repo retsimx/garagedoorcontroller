@@ -5,11 +5,14 @@ use defmt_rtt as _;
 use panic_probe as _;
 
 use embassy_executor::Spawner;
+use embassy_rp::watchdog::{ResetReason, Watchdog};
+use embassy_time::{Duration, Timer};
 
 mod beacon;
 mod radio;
 #[allow(dead_code)]
 mod secrets;
+pub mod update;
 mod wifi;
 
 /// Parse a bare ASCII integer at compile time.
@@ -32,8 +35,20 @@ pub const VERSION: u32 = parse_u32(env!("GARAGEDOOR_BUILD_VERSION"));
 async fn main(spawner: Spawner) {
     let p = embassy_rp::init(Default::default());
 
+    let mut wd = Watchdog::new(p.WATCHDOG);
+    let reset_reason = match wd.reset_reason() {
+        Some(ResetReason::Forced) => "watchdog-forced",
+        Some(ResetReason::TimedOut) => "watchdog-timeout",
+        None => "power-on-or-debugger",
+    };
+
     defmt::info!("garagedoor-app starting, version={}", VERSION);
+    defmt::info!("reset_reason={}", reset_reason);
     defmt::info!("garagedoor-app peripherals initialized");
+
+    wd.start(update::WATCHDOG_TIMEOUT);
+    update::init_watchdog(wd);
+    spawner.spawn(defmt::unwrap!(watchdog_task()));
 
     let controller = garagedoor_core::DoorController::new(garagedoor_core::DoorState::Closed);
     defmt::info!(
@@ -56,4 +71,12 @@ async fn main(spawner: Spawner) {
 
     spawner.spawn(defmt::unwrap!(beacon::beacon_task(control)));
     spawner.spawn(defmt::unwrap!(wifi::wifi_supervisor_task(control, stack)));
+}
+
+#[embassy_executor::task]
+async fn watchdog_task() -> ! {
+    loop {
+        update::feed(update::WATCHDOG_TIMEOUT);
+        Timer::after(Duration::from_millis(500)).await;
+    }
 }

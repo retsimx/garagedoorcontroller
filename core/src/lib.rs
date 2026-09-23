@@ -5,6 +5,8 @@
 //! This crate contains zero hardware or runtime dependencies and compiles cleanly
 //! on host architectures (x86_64) as well as embedded bare-metal targets.
 
+pub mod flash;
+
 /// Current state of the garage door.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DoorState {

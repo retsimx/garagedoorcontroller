@@ -15,7 +15,7 @@ use embassy_boot_rp::{BootLoader, BootLoaderConfig, State, WatchdogFlash};
 use embassy_sync::blocking_mutex::Mutex;
 use embassy_time::Duration;
 
-const FLASH_SIZE: usize = 2 * 1024 * 1024;
+const FLASH_SIZE: usize = garagedoor_core::flash::FLASH_BYTES as usize;
 
 /// Fail-fast global allocator.
 /// Satisfies the linker if any dependency pulls alloc via workspace feature unification.
