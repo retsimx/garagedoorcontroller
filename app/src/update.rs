@@ -219,3 +219,18 @@ impl Updater {
         self.inner.mark_dfu().await
     }
 }
+
+/// OTA streaming adapter. The inherent `write_firmware`/`mark_updated` methods
+/// take priority in method resolution, so `self.write_firmware` below is the
+/// `embassy-boot` call, not a recursive trait call.
+impl garagedoor_core::ota::Flasher for Updater {
+    type Error = FirmwareUpdaterError;
+
+    async fn write(&mut self, offset: usize, data: &[u8]) -> Result<(), Self::Error> {
+        self.write_firmware(offset, data).await
+    }
+
+    async fn mark_updated(&mut self) -> Result<(), Self::Error> {
+        self.mark_updated().await
+    }
+}

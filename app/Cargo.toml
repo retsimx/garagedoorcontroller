@@ -25,6 +25,26 @@ embedded-storage = { workspace = true }
 embedded-storage-async = { workspace = true }
 static_cell = { workspace = true }
 portable-atomic = { version = "1.5", features = ["critical-section"] }
+# OTA transport: TLS 1.3 over embassy-net. The entropy source is embassy-rp's
+# `clocks::RoscRng` (the RP2040 ROSC random bit), so no direct `rand_core`
+# dependency is needed.
+#
+# `rustpki` + `rsa` (and its implied `alloc`) are required to verify the
+# RSA-PSS/RSA-PKCS#1 handshake signature presented by the real endpoint's
+# Let's Encrypt RSA certificate. RSA verification allocates, so the crate's
+# `alloc` feature is on and the firmware provides a static heap (see
+# `src/heap.rs`).
+embedded-tls = { version = "0.19", default-features = false, features = ["rustpki", "rsa", "alloc"] }
+embedded-io-async = "0.7"
+# Static heap backing `embedded-tls`'s `alloc`-enabled RSA verification. Only
+# `llff` (linked-list first-fit) is enabled: the default also pulls `tlsf`
+# (and its `rlsf`/`const-default` deps), which the image does not use.
+embedded-alloc = { version = "0.6", default-features = false, features = ["llff"] }
+# `rsa` pulls `num-bigint-dig` -> `lazy_static` -> `spin`. thumbv6m has no
+# `compare_exchange`, so `spin` must use `portable-atomic` (backed by the
+# `critical-section` impl already enabled below) instead of `core` atomics.
+# `lazy_static` already enables spin's `once`; this only adds the backend.
+spin = { version = "0.9", default-features = false, features = ["portable_atomic"] }
 defmt = { workspace = true }
 defmt-rtt = { workspace = true }
 panic-probe = { workspace = true }
