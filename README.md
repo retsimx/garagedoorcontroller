@@ -114,3 +114,41 @@ copies and publishes nothing and does not trigger the device:
 ```sh
 ./deploy.sh --dry-run
 ```
+
+## Flashing & recovery
+
+The flash layout is a bootloader (`boot2` + bootloader at `0x10000000`) plus the
+ACTIVE application at `0x10006000`. The bootloader must be built **alone** so that
+workspace feature unification does not strip `.boot2`:
+
+```sh
+cargo build --release --target thumbv6m-none-eabi -p garagedoor-bootloader
+cargo build --release --target thumbv6m-none-eabi -p garagedoor-app
+```
+
+### SWD (probe-rs)
+
+```
+probe-rs download --chip RP2040 --binary-format bin --base-address 0x10000000 bootloader.bin
+probe-rs download --chip RP2040 --binary-format bin --base-address 0x10006000 app.bin
+probe-rs reset   --chip RP2040
+probe-rs attach  --chip RP2040 target/thumbv6m-none-eabi/release/garagedoor-app   # defmt RTT
+```
+
+On rigs where more than one debug port is visible on the SWD multi-drop,
+`probe-rs` cannot auto-detect the chip; pass `--chip RP2040` explicitly.
+
+### USB / UF2
+
+The RP2040 bootrom requires a **contiguous** UF2 (a 256-byte payload on every
+block, and block addresses contiguous from the load address). `scripts/make_uf2.py`
+builds one from the bootloader + application bins:
+
+```sh
+python3 scripts/make_uf2.py gdc.uf2 0x10000000 0x0 bootloader.bin 0x6000 app.bin
+# copy gdc.uf2 onto the RPI-RP2 mass-storage volume
+```
+
+To enter the ROM bootloader without the BOOTSEL button, the running bootloader
+honours the `DfuDetach` state (`Updater::mark_dfu()`); on the next reset it calls
+`reset_to_usb_boot`.

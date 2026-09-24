@@ -62,7 +62,9 @@ async fn main(spawner: Spawner) {
     #[cfg(feature = "selftest-broken")]
     panic!("simulated boot failure");
 
-    let reed = Input::new(p.PIN_21, Pull::Up);
+    // No internal pull: the legacy firmware used a bare input (`Pin(21, IN)`),
+    // relying on the board's external reed network to define the level.
+    let reed = Input::new(p.PIN_21, Pull::None);
 
     // Boot disposition, read once from the embassy-boot state.
     let mut updater = update::Updater::new(p.FLASH);

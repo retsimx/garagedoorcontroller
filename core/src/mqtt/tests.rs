@@ -188,8 +188,8 @@ fn format_onchange_true_exact_bytes() {
 fn format_status_response_true_exact_bytes() {
     let mut buf = [0u8; 64];
     assert_eq!(
-        format_status_response(&mut buf, "123", true),
-        Ok(r#"{"uuid":"123","result":{"open":true}}"#)
+        format_status_response(&mut buf, "123", true, 7),
+        Ok(r#"{"uuid":"123","result":{"open":true,"version":7}}"#)
     );
 }
 
@@ -197,8 +197,8 @@ fn format_status_response_true_exact_bytes() {
 fn format_status_response_false_exact_bytes() {
     let mut buf = [0u8; 64];
     assert_eq!(
-        format_status_response(&mut buf, "123", false),
-        Ok(r#"{"uuid":"123","result":{"open":false}}"#)
+        format_status_response(&mut buf, "123", false, 7),
+        Ok(r#"{"uuid":"123","result":{"open":false,"version":7}}"#)
     );
 }
 
@@ -215,7 +215,7 @@ fn format_onchange_truncated_without_panic() {
 fn format_status_response_truncated_without_panic() {
     let mut buf = [0u8; 8];
     assert_eq!(
-        format_status_response(&mut buf, "123", true),
+        format_status_response(&mut buf, "123", true, 7),
         Err(EncodeError::Truncated)
     );
 }
@@ -225,9 +225,24 @@ fn format_fits_exact_buffer() {
     let mut onchange = [0u8; 13];
     assert_eq!(format_onchange(&mut onchange, true), Ok(r#"{"open":true}"#));
 
-    let mut status = [0u8; 37];
+    let mut status = [0u8; 49];
     assert_eq!(
-        format_status_response(&mut status, "123", true),
-        Ok(r#"{"uuid":"123","result":{"open":true}}"#)
+        format_status_response(&mut status, "123", true, 7),
+        Ok(r#"{"uuid":"123","result":{"open":true,"version":7}}"#)
+    );
+}
+
+#[test]
+fn format_status_response_version_boundaries() {
+    let mut zero = [0u8; 64];
+    assert_eq!(
+        format_status_response(&mut zero, "u", false, 0),
+        Ok(r#"{"uuid":"u","result":{"open":false,"version":0}}"#)
+    );
+
+    let mut max = [0u8; 64];
+    assert_eq!(
+        format_status_response(&mut max, "u", true, u32::MAX),
+        Ok(r#"{"uuid":"u","result":{"open":true,"version":4294967295}}"#)
     );
 }

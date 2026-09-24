@@ -45,14 +45,18 @@ pub async fn actuator_task(
 
                 match interlock.trigger(now) {
                     Ok(action) => {
+                        // Timestamp the assertion so the bench can measure the true
+                        // high window (the pad is driven directly by `apply`).
+                        let asserted_at = Instant::now();
                         apply(&mut relay, action);
                         Timer::after(Duration::from_millis(RELAY_PULSE_MS as u64)).await;
                         // De-assert unconditionally once the pulse window has elapsed
                         // so a sub-tick boundary can never leave the relay asserted,
                         // then reconcile the interlock to arm the cooldown.
                         apply(&mut relay, RelayAction::DeassertLow);
+                        let pulse_us = (Instant::now() - asserted_at).as_micros();
                         let _ = interlock.poll(now_ms());
-                        defmt::info!("relay pulse complete");
+                        defmt::info!("relay pulse complete pulse_us={}", pulse_us);
                     }
                     Err(reason) => {
                         // Interlock holds: leave the pin untouched.

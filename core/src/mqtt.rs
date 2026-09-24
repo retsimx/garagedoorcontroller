@@ -117,20 +117,26 @@ pub fn format_onchange(buf: &mut [u8], open: bool) -> Result<&str, EncodeError> 
     write_exact(buf, payload)
 }
 
-/// Writes the compact `{"uuid":"<uuid>","result":{"open":<bool>}}` response into `buf`.
+/// Writes the compact `{"uuid":"<uuid>","result":{"open":<bool>,"version":<n>}}`
+/// response into `buf`.
 ///
 /// `uuid` is written verbatim as the string token body extracted by
-/// [`parse_status_request`], so no re-escaping is performed.
+/// [`parse_status_request`], so no re-escaping is performed. The extra
+/// `version` field reports the running firmware version so a probe-less device
+/// can be checked from the broker after an OTA.
 pub fn format_status_response<'a>(
     buf: &'a mut [u8],
     uuid: &str,
     open: bool,
+    version: u32,
 ) -> Result<&'a str, EncodeError> {
     let mut pos = 0;
     write(buf, &mut pos, r#"{"uuid":""#)?;
     write(buf, &mut pos, uuid)?;
     write(buf, &mut pos, r#"","result":{"open":"#)?;
     write(buf, &mut pos, if open { "true" } else { "false" })?;
+    write(buf, &mut pos, r#","version":"#)?;
+    write_u32(buf, &mut pos, version)?;
     write(buf, &mut pos, r#"}}"#)?;
     finish(buf, pos)
 }
@@ -156,6 +162,30 @@ fn write(buf: &mut [u8], pos: &mut usize, payload: &str) -> Result<(), EncodeErr
     }
     buf[*pos..end].copy_from_slice(bytes);
     *pos = end;
+    Ok(())
+}
+
+/// Writes `value` as bare decimal digits (no sign, no padding).
+fn write_u32(buf: &mut [u8], pos: &mut usize, mut value: u32) -> Result<(), EncodeError> {
+    let mut digits = [0u8; 10];
+    let mut len = 0;
+    if value == 0 {
+        digits[0] = b'0';
+        len = 1;
+    } else {
+        while value > 0 {
+            digits[len] = b'0' + (value % 10) as u8;
+            value /= 10;
+            len += 1;
+        }
+    }
+    for index in (0..len).rev() {
+        if *pos >= buf.len() {
+            return Err(EncodeError::Truncated);
+        }
+        buf[*pos] = digits[index];
+        *pos += 1;
+    }
     Ok(())
 }
 

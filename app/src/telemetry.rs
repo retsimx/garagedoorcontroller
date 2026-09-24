@@ -303,7 +303,7 @@ pub async fn telemetry_task(stack: NetStack) -> ! {
                     };
 
                     let mut buf = [0u8; PAYLOAD_MAX];
-                    match mqtt::format_status_response(&mut buf, uuid, open) {
+                    match mqtt::format_status_response(&mut buf, uuid, open, crate::VERSION) {
                         Ok(payload) => {
                             let publication =
                                 Publication::bytes(mqtt::TOPIC_STATUS_RESPONSE, payload.as_bytes())
