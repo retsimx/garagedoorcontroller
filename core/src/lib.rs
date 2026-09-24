@@ -9,6 +9,7 @@ pub mod door;
 pub mod flash;
 pub mod mqtt;
 pub mod ota;
+pub mod wifi;
 
 pub use door::{
     DoorCommand, DoorState, ReedDebouncer, RelayAction, RelayInterlock, TriggerRejection,
@@ -23,6 +24,10 @@ pub use ota::{
     parse_version, BodyReader, Decision, Flasher, HeadError, HeadEvent, HeadParser, ResponseHead,
     SelfTestDecision, SelfTestSignals, UpdateError, Uri, UrlError, CHUNK_BYTES,
     SELF_TEST_WINDOW_MS,
+};
+pub use wifi::{
+    NoIpWatchdog, RejoinCounter, DHCP_ATTEMPTS, DHCP_TIMEOUT_MS, INITIAL_BACKOFF_MS,
+    JOIN_TIMEOUT_MS, LEAVE_TIMEOUT_MS, MAX_BACKOFF_MS, MQTT_REJOIN_FAILURES, NO_IP_REBOOT_MS,
 };
 
 #[cfg(test)]
