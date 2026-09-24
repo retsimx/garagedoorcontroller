@@ -16,9 +16,9 @@ pub const REED_DEBOUNCE_MS: u32 = 50;
 /// Confirmed state of the garage door as reported by the reed switch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DoorState {
-    /// Reed contact open / magnet away (GPIO 21 HIGH).
+    /// Door open; GPIO 21 LOW (legacy MicroPython parity).
     Open,
-    /// Reed contact closed / magnet near (GPIO 21 LOW).
+    /// Door closed; GPIO 21 HIGH (legacy MicroPython parity).
     Closed,
 }
 

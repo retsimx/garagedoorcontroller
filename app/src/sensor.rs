@@ -17,7 +17,9 @@ fn now_ms() -> u64 {
 /// signals the committed [`DoorState`] only when it actually changes.
 #[embassy_executor::task]
 pub async fn sensor_task(mut reed: Input<'static>) -> ! {
-    let initial = if reed.is_low() {
+    // Legacy MicroPython parity: GPIO 21 HIGH means the door is CLOSED and LOW
+    // means OPEN (`False if reed_pin.value() else True` in the old firmware).
+    let initial = if reed.is_high() {
         DoorState::Closed
     } else {
         DoorState::Open
@@ -27,7 +29,7 @@ pub async fn sensor_task(mut reed: Input<'static>) -> ! {
     defmt::info!("door state: {:?}", defmt::Debug2Format(&initial));
 
     loop {
-        let closed = reed.is_low();
+        let closed = reed.is_high();
         if let Some(state) = debouncer.update(closed, now_ms()) {
             DOOR_STATE_SIGNAL.signal(state);
             defmt::info!("door state: {:?}", defmt::Debug2Format(&state));
@@ -42,9 +44,9 @@ pub async fn sensor_task(mut reed: Input<'static>) -> ! {
             // re-samples at least every debounce interval as a safety net.
             let debounce = Duration::from_millis(REED_DEBOUNCE_MS as u64);
             if closed {
-                let _ = with_timeout(debounce, reed.wait_for_high()).await;
-            } else {
                 let _ = with_timeout(debounce, reed.wait_for_low()).await;
+            } else {
+                let _ = with_timeout(debounce, reed.wait_for_high()).await;
             }
         }
     }
