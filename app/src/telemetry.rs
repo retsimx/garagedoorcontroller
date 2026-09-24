@@ -14,6 +14,7 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
 use embassy_time::{Duration, Timer};
 use garagedoor_core::mqtt;
+use garagedoor_core::wifi::RejoinCounter;
 use garagedoor_core::{DoorCommand, DoorState};
 use minimq::{
     Buffers, ConfigBuilder, ConnectEvent, Connection, Publication, QoS, Session, TopicFilter,
@@ -23,6 +24,7 @@ use crate::actuator::DOOR_CMD_CHANNEL;
 use crate::radio::NetStack;
 use crate::secrets;
 use crate::sensor::DOOR_STATE_SIGNAL;
+use crate::wifi::WIFI_REJOIN_SIGNAL;
 
 /// Integration point for the GDC-7 (issue #8) OTA worker.
 ///
@@ -147,6 +149,17 @@ async fn backoff_wait(backoff: &mut Duration) {
     *backoff = core::cmp::min(*backoff * 2, MAX_BACKOFF);
 }
 
+/// Record one failed connect attempt and wait out the backoff. After repeated
+/// failures the link is assumed associated-but-dead and a Wi-Fi rejoin is
+/// requested, since the link state alone never reports that condition.
+async fn fail_backoff(backoff: &mut Duration, rejoin: &mut RejoinCounter) {
+    if rejoin.failure() {
+        defmt::warn!("mqtt: repeated connect failures; requesting Wi-Fi rejoin");
+        WIFI_REJOIN_SIGNAL.signal(());
+    }
+    backoff_wait(backoff).await;
+}
+
 /// MQTT telemetry and control task.
 #[embassy_executor::task]
 pub async fn telemetry_task(stack: NetStack) -> ! {
@@ -171,6 +184,7 @@ pub async fn telemetry_task(stack: NetStack) -> ! {
     let mut session = Session::new(config);
 
     let mut backoff = INITIAL_BACKOFF;
+    let mut rejoin = RejoinCounter::new();
     let mut current: Option<DoorState> = None;
 
     loop {
@@ -182,7 +196,7 @@ pub async fn telemetry_task(stack: NetStack) -> ! {
                 Some(addr) => *addr,
                 None => {
                     defmt::warn!("mqtt: broker '{}' resolved to no addresses", host);
-                    backoff_wait(&mut backoff).await;
+                    fail_backoff(&mut backoff, &mut rejoin).await;
                     continue;
                 }
             },
@@ -192,7 +206,7 @@ pub async fn telemetry_task(stack: NetStack) -> ! {
                     host,
                     defmt::Debug2Format(&err)
                 );
-                backoff_wait(&mut backoff).await;
+                fail_backoff(&mut backoff, &mut rejoin).await;
                 continue;
             }
         };
@@ -206,7 +220,7 @@ pub async fn telemetry_task(stack: NetStack) -> ! {
                 port,
                 defmt::Debug2Format(&err)
             );
-            backoff_wait(&mut backoff).await;
+            fail_backoff(&mut backoff, &mut rejoin).await;
             continue;
         }
         socket.set_timeout(None);
@@ -218,11 +232,12 @@ pub async fn telemetry_task(stack: NetStack) -> ! {
                     "mqtt: session connect failed: {:?}",
                     defmt::Debug2Format(&err)
                 );
-                backoff_wait(&mut backoff).await;
+                fail_backoff(&mut backoff, &mut rejoin).await;
                 continue;
             }
         };
         backoff = INITIAL_BACKOFF;
+        rejoin.success();
         defmt::info!("mqtt: connected to {}:{}", host, port);
 
         if conn.connect_event() == ConnectEvent::Connected {
@@ -233,7 +248,7 @@ pub async fn telemetry_task(stack: NetStack) -> ! {
             ];
             if let Err(err) = conn.subscribe(&topics, &[]).await {
                 defmt::warn!("mqtt: subscribe failed: {:?}", defmt::Debug2Format(&err));
-                backoff_wait(&mut backoff).await;
+                fail_backoff(&mut backoff, &mut rejoin).await;
                 continue;
             }
             defmt::info!("mqtt: subscribed to command topics");
@@ -327,6 +342,6 @@ pub async fn telemetry_task(stack: NetStack) -> ! {
             "mqtt: connection lost; reconnecting in {}s",
             backoff.as_secs()
         );
-        backoff_wait(&mut backoff).await;
+        fail_backoff(&mut backoff, &mut rejoin).await;
     }
 }
