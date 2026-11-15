@@ -44,25 +44,33 @@ pub const NO_IP_REBOOT_MS: u64 = 10 * 60 * 1000;
 /// Tracks how long the device has been without an IP lease.
 #[derive(Debug, Clone, Copy)]
 pub struct NoIpWatchdog {
-    last_ip_ms: Option<u64>,
+    last_good_ms: Option<u64>,
 }
 
 impl NoIpWatchdog {
     /// Creates a watchdog that is already "due" once [`NO_IP_REBOOT_MS`] has
     /// elapsed since boot if no lease is ever acquired.
     pub const fn new() -> Self {
-        Self { last_ip_ms: None }
+        Self { last_good_ms: None }
     }
 
-    /// Record that an IP lease is held at `now_ms`.
-    pub fn note_ip(&mut self, now_ms: u64) {
-        self.last_ip_ms = Some(now_ms);
+    /// Record `now_ms` as the last moment the link was known good: a lease was
+    /// held then.
+    ///
+    /// The no-lease countdown is measured from this instant, so it is refreshed
+    /// both when a lease is acquired and when a held link is lost. Refreshing on
+    /// the loss is what keeps a healthy association from being charged to the
+    /// next outage: without it a link that stayed up longer than
+    /// [`NO_IP_REBOOT_MS`] looks overdue the moment it drops, and the following
+    /// re-association escalates to a reset.
+    pub fn note_last_good(&mut self, now_ms: u64) {
+        self.last_good_ms = Some(now_ms);
     }
 
-    /// Returns `true` when no lease has been held for at least
-    /// [`NO_IP_REBOOT_MS`].
+    /// Returns `true` when [`NO_IP_REBOOT_MS`] has elapsed since the last
+    /// known-good instant (a lease acquisition or a link loss).
     pub fn reboot_due(&self, now_ms: u64) -> bool {
-        let reference = self.last_ip_ms.unwrap_or(0);
+        let reference = self.last_good_ms.unwrap_or(0);
         now_ms.saturating_sub(reference) >= NO_IP_REBOOT_MS
     }
 }
