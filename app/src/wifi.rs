@@ -21,7 +21,7 @@ use embassy_sync::signal::Signal;
 use embassy_time::{with_timeout, Duration, Instant, Timer};
 use garagedoor_core::wifi::{
     NoIpWatchdog, DHCP_ATTEMPTS, DHCP_TIMEOUT_MS, INITIAL_BACKOFF_MS, JOIN_TIMEOUT_MS,
-    LEAVE_TIMEOUT_MS, MAX_BACKOFF_MS, NO_IP_REBOOT_MS,
+    LEAVE_TIMEOUT_MS, MAX_BACKOFF_MS, NO_IP_REBOOT_MS, STABLE_LEASE_MS,
 };
 
 use crate::beacon::{self, BeaconState};
@@ -52,7 +52,6 @@ async fn join_with(
     control: &'static ControlMutex,
     auth: cyw43::JoinAuth,
 ) -> Result<(), JoinAttemptError> {
-    let mut ctrl = control.lock().await;
     let options = if secrets::WIFI_PASSWORD.is_empty() {
         cyw43::JoinOptions::new_open()
     } else {
@@ -60,8 +59,12 @@ async fn join_with(
         options.auth = auth;
         options
     };
-    let join = ctrl.join(secrets::WIFI_SSID, options);
-    match with_timeout(Duration::from_millis(JOIN_TIMEOUT_MS), join).await {
+    match with_timeout(Duration::from_millis(JOIN_TIMEOUT_MS), async {
+        let mut ctrl = control.lock().await;
+        ctrl.join(secrets::WIFI_SSID, options).await
+    })
+    .await
+    {
         Ok(Ok(())) => Ok(()),
         Ok(Err(err)) => Err(JoinAttemptError::Join(err)),
         Err(_) => Err(JoinAttemptError::Timeout),
@@ -116,6 +119,7 @@ async fn handle_associated(stack: NetStack, backoff: &mut Duration, watchdog: &m
 
     let mut attempts = 0;
     loop {
+        crate::watchdog::note_wifi_alive();
         attempts += 1;
         // Note: do NOT race `wait_link_down()` here. The interface is not yet
         // reported "up" at this point, so that future would resolve instantly
@@ -150,39 +154,60 @@ async fn handle_associated(stack: NetStack, backoff: &mut Duration, watchdog: &m
     }
 
     log_ip_config(stack);
-    watchdog.note_last_good(now_ms());
+    let lease_start_ms = now_ms();
     beacon::BEACON_SIGNAL.signal(BeaconState::Connected);
 
     // Reset exponential backoff on successful connection.
     *backoff = Duration::from_millis(INITIAL_BACKOFF_MS);
 
-    // Monitor the active link; return on loss or on a rejoin request.
-    match select(stack.wait_link_down(), WIFI_REJOIN_SIGNAL.wait()).await {
-        Either::First(()) => {
-            watchdog.note_last_good(now_ms());
-            defmt::warn!("wifi: network link dropped!");
-            beacon::BEACON_SIGNAL.signal(BeaconState::Error(2));
-        }
-        Either::Second(()) => {
-            watchdog.note_last_good(now_ms());
-            defmt::warn!("wifi: rejoin requested");
-            beacon::BEACON_SIGNAL.signal(BeaconState::Error(2));
+    // Monitor the active link; return on loss or on a rejoin request, and only
+    // refresh the no-IP watchdog once the lease has stayed up for STABLE_LEASE_MS.
+    loop {
+        crate::watchdog::note_wifi_alive();
+        match with_timeout(
+            Duration::from_millis(STABLE_LEASE_MS),
+            select(stack.wait_link_down(), WIFI_REJOIN_SIGNAL.wait()),
+        )
+        .await
+        {
+            Ok(Either::First(())) => {
+                watchdog.note_link_loss(lease_start_ms, now_ms());
+                defmt::warn!("wifi: network link dropped!");
+                beacon::BEACON_SIGNAL.signal(BeaconState::Error(2));
+                break;
+            }
+            Ok(Either::Second(())) => {
+                defmt::warn!("wifi: rejoin requested");
+                beacon::BEACON_SIGNAL.signal(BeaconState::Error(2));
+                break;
+            }
+            Err(_) => {
+                // Lease has stayed up without link loss or rejoin request for STABLE_LEASE_MS.
+                watchdog.note_last_good(now_ms());
+            }
         }
     }
 }
 
-/// Leave the current association (bounded) and wait with exponential backoff
-/// before the next attempt.
-async fn leave_and_backoff(control: &'static ControlMutex, backoff: &mut Duration) {
-    {
+/// Leave the current association (bounded), clear any stale IPv4 lease and
+/// reset the DHCPv4 state machine, and wait with exponential backoff before
+/// the next attempt.
+async fn leave_and_backoff(
+    control: &'static ControlMutex,
+    stack: NetStack,
+    backoff: &mut Duration,
+) {
+    if with_timeout(Duration::from_millis(LEAVE_TIMEOUT_MS), async {
         let mut ctrl = control.lock().await;
-        if with_timeout(Duration::from_millis(LEAVE_TIMEOUT_MS), ctrl.leave())
-            .await
-            .is_err()
-        {
-            defmt::warn!("wifi: leave did not complete; continuing");
-        }
+        ctrl.leave().await;
+    })
+    .await
+    .is_err()
+    {
+        defmt::warn!("wifi: leave did not complete; continuing");
     }
+
+    stack.set_config_v4(embassy_net::ConfigV4::Dhcp(Default::default()));
 
     defmt::info!(
         "wifi: backing off for {}s before next retry...",
@@ -204,6 +229,7 @@ pub async fn wifi_supervisor_task(control: &'static ControlMutex, stack: NetStac
     let mut watchdog = NoIpWatchdog::new();
 
     loop {
+        crate::watchdog::note_wifi_alive();
         defmt::info!(
             "wifi: initiating association to SSID: {}",
             secrets::WIFI_SSID
@@ -222,14 +248,14 @@ pub async fn wifi_supervisor_task(control: &'static ControlMutex, stack: NetStac
             }
         }
 
-        if watchdog.reboot_due(now_ms()) {
+        if watchdog.reboot_due(now_ms()) && !crate::watchdog::is_ota_flashing() {
             defmt::error!(
                 "wifi: no IP for {}s; resetting to recover the radio",
                 NO_IP_REBOOT_MS / 1000
             );
-            cortex_m::peripheral::SCB::sys_reset();
+            crate::watchdog::trigger_reset();
         }
 
-        leave_and_backoff(control, &mut backoff).await;
+        leave_and_backoff(control, stack, &mut backoff).await;
     }
 }

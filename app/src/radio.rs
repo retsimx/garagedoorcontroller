@@ -11,6 +11,8 @@ use embassy_rp::pio::{InterruptHandler, Pio};
 use embassy_rp::{bind_interrupts, dma, Peri};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::mutex::Mutex;
+use embassy_time::{with_timeout, Duration};
+use garagedoor_core::wifi::RADIO_INIT_TIMEOUT_MS;
 use static_cell::StaticCell;
 
 bind_interrupts!(struct Irqs {
@@ -95,10 +97,18 @@ pub async fn init(spawner: Spawner, p: RadioPeripherals) -> (&'static ControlMut
     let (net_device, mut control, runner) = cyw43::new(state, pwr, spi, fw, nvram).await;
     spawner.spawn(defmt::unwrap!(cyw43_task(runner)));
 
-    control.init(clm).await;
-    control
-        .set_power_management(cyw43::PowerManagementMode::Performance)
-        .await;
+    if with_timeout(Duration::from_millis(RADIO_INIT_TIMEOUT_MS), async {
+        control.init(clm).await;
+        control
+            .set_power_management(cyw43::PowerManagementMode::Performance)
+            .await;
+    })
+    .await
+    .is_err()
+    {
+        defmt::error!("radio: controller init timed out; resetting");
+        crate::watchdog::trigger_reset();
+    }
 
     let stack = init_net_stack(spawner, net_device);
 

@@ -181,6 +181,7 @@ async fn check_and_update(stack: NetStack, updater: &mut update::Updater) -> Res
     defmt::info!("ota_head status={} len={}", head.status, len);
 
     let result = {
+        let _ota_guard = crate::watchdog::enter_ota_flash();
         let mut body = HttpBody {
             link: &mut link,
             leftover: &leftover[..extra],
@@ -199,7 +200,7 @@ async fn check_and_update(stack: NetStack, updater: &mut update::Updater) -> Res
     defmt::info!("ota_hash_ok");
     defmt::info!("ota_marked");
     defmt::info!("ota_flash_window_max_us={}", update::max_window_us());
-    cortex_m::peripheral::SCB::sys_reset();
+    crate::watchdog::trigger_reset();
 }
 
 fn fetch_failed(error: FetchError) -> OtaError {
