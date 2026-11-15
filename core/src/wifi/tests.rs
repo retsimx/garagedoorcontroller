@@ -12,13 +12,13 @@ fn no_ip_watchdog_is_due_after_threshold_without_a_lease() {
 #[test]
 fn no_ip_watchdog_resets_on_lease() {
     let mut watchdog = NoIpWatchdog::new();
-    watchdog.note_ip(1_000);
+    watchdog.note_last_good(1_000);
     assert!(!watchdog.reboot_due(1_000));
     assert!(!watchdog.reboot_due(1_000 + NO_IP_REBOOT_MS - 1));
     assert!(watchdog.reboot_due(1_000 + NO_IP_REBOOT_MS));
 
     // A later lease moves the deadline.
-    watchdog.note_ip(500_000);
+    watchdog.note_last_good(500_000);
     assert!(!watchdog.reboot_due(500_000 + NO_IP_REBOOT_MS - 1));
     assert!(watchdog.reboot_due(500_000 + NO_IP_REBOOT_MS));
 }
@@ -26,8 +26,25 @@ fn no_ip_watchdog_resets_on_lease() {
 #[test]
 fn no_ip_watchdog_handles_a_backwards_clock() {
     let mut watchdog = NoIpWatchdog::new();
-    watchdog.note_ip(10_000);
+    watchdog.note_last_good(10_000);
     assert!(!watchdog.reboot_due(5_000));
+}
+
+#[test]
+fn link_loss_after_a_long_association_does_not_reboot() {
+    const ELEVEN_HOURS_MS: u64 = 11 * 60 * 60 * 1000;
+
+    let mut watchdog = NoIpWatchdog::new();
+    watchdog.note_last_good(0);
+
+    // The trap: the lease was stamped at association, so a healthy 11 hour
+    // association already looks overdue for a reset the moment the link drops.
+    assert!(watchdog.reboot_due(ELEVEN_HOURS_MS));
+
+    // The fix: the countdown restarts at the link loss, not the association.
+    watchdog.note_last_good(ELEVEN_HOURS_MS);
+    assert!(!watchdog.reboot_due(ELEVEN_HOURS_MS + NO_IP_REBOOT_MS - 1));
+    assert!(watchdog.reboot_due(ELEVEN_HOURS_MS + NO_IP_REBOOT_MS));
 }
 
 #[test]

@@ -44,13 +44,21 @@ enum JoinAttemptError {
     Join(cyw43::JoinError),
 }
 
-/// Attempt to join the configured Wi-Fi network, bounded by a timeout.
-async fn attempt_join(control: &'static ControlMutex) -> Result<(), JoinAttemptError> {
+/// One join attempt with an explicit authentication mode, bounded by a timeout.
+///
+/// `auth` is ignored for open networks, which the driver joins with
+/// [`cyw43::JoinAuth::Open`].
+async fn join_with(
+    control: &'static ControlMutex,
+    auth: cyw43::JoinAuth,
+) -> Result<(), JoinAttemptError> {
     let mut ctrl = control.lock().await;
     let options = if secrets::WIFI_PASSWORD.is_empty() {
         cyw43::JoinOptions::new_open()
     } else {
-        cyw43::JoinOptions::new(secrets::WIFI_PASSWORD.as_bytes())
+        let mut options = cyw43::JoinOptions::new(secrets::WIFI_PASSWORD.as_bytes());
+        options.auth = auth;
+        options
     };
     let join = ctrl.join(secrets::WIFI_SSID, options);
     match with_timeout(Duration::from_millis(JOIN_TIMEOUT_MS), join).await {
@@ -58,6 +66,32 @@ async fn attempt_join(control: &'static ControlMutex) -> Result<(), JoinAttemptE
         Ok(Err(err)) => Err(JoinAttemptError::Join(err)),
         Err(_) => Err(JoinAttemptError::Timeout),
     }
+}
+
+/// Attempt to join the configured Wi-Fi network, bounded by a timeout.
+///
+/// WPA2-PSK is tried before the driver default (WPA2/WPA3), because the CYW43439
+/// firmware drops a WPA3 (SAE) association every ~11 hours and then re-associates
+/// on its own; every such disassociation costs a full rejoin. It also used to
+/// cost an MCU reset: the no-IP countdown was stamped only at lease acquisition,
+/// so the whole association age was charged to the outage that followed.
+/// Re-arming the countdown at link loss removed that. See
+/// `georgerobotics/cyw43-driver#161` and the Infineon report it cites.
+///
+/// The WPA2/WPA3 default is kept as a fallback so an access point that no longer
+/// advertises WPA2-PSK (WPA3-only) still associates, at the cost of one extra
+/// failed join attempt per reconnect on such a network.
+async fn attempt_join(control: &'static ControlMutex) -> Result<(), JoinAttemptError> {
+    let wpa2 = join_with(control, cyw43::JoinAuth::Wpa2).await;
+    if wpa2.is_ok() || secrets::WIFI_PASSWORD.is_empty() {
+        return wpa2;
+    }
+
+    defmt::warn!("wifi: WPA2 join failed; retrying with WPA2/WPA3");
+    // No `leave()` here: `Control::join()` re-issues the full security
+    // configuration, the timed-out attempt's future and lock guard are dropped
+    // together, and the supervisor leaves on its next iteration.
+    join_with(control, cyw43::JoinAuth::Wpa2Wpa3).await
 }
 
 /// Log acquired IPv4 configuration.
@@ -116,7 +150,7 @@ async fn handle_associated(stack: NetStack, backoff: &mut Duration, watchdog: &m
     }
 
     log_ip_config(stack);
-    watchdog.note_ip(now_ms());
+    watchdog.note_last_good(now_ms());
     beacon::BEACON_SIGNAL.signal(BeaconState::Connected);
 
     // Reset exponential backoff on successful connection.
@@ -125,10 +159,12 @@ async fn handle_associated(stack: NetStack, backoff: &mut Duration, watchdog: &m
     // Monitor the active link; return on loss or on a rejoin request.
     match select(stack.wait_link_down(), WIFI_REJOIN_SIGNAL.wait()).await {
         Either::First(()) => {
+            watchdog.note_last_good(now_ms());
             defmt::warn!("wifi: network link dropped!");
             beacon::BEACON_SIGNAL.signal(BeaconState::Error(2));
         }
         Either::Second(()) => {
+            watchdog.note_last_good(now_ms());
             defmt::warn!("wifi: rejoin requested");
             beacon::BEACON_SIGNAL.signal(BeaconState::Error(2));
         }
