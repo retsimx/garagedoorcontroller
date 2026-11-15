@@ -3,6 +3,7 @@
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
 use embassy_time::{with_timeout, Duration};
+use garagedoor_core::wifi::GPIO_TIMEOUT_MS;
 
 use crate::radio::ControlMutex;
 
@@ -27,9 +28,14 @@ async fn step_led(
     duration: Duration,
     current_state: &mut BeaconState,
 ) {
-    {
+    if with_timeout(Duration::from_millis(GPIO_TIMEOUT_MS), async {
         let mut ctrl = control.lock().await;
         ctrl.gpio_set(0, on).await;
+    })
+    .await
+    .is_err()
+    {
+        defmt::warn!("beacon: gpio_set timed out");
     }
 
     if let Ok(new_state) = with_timeout(duration, BEACON_SIGNAL.wait()).await {

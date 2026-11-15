@@ -4,21 +4,23 @@
 //! reconnects with exponential backoff across network loss, subscribes to the
 //! command topics (`trigger`/`status`/`reset`), publishes state changes on
 //! `onchange`, and answers correlated status requests. Network, parse, and
-//! publish failures are logged and recovered from — this task never resets or
-//! panics the MCU, so offline door control stays fully functional.
+//! publish failures are logged and recovered from — this task never panics the
+//! MCU, and only resets after [`NO_IP_REBOOT_MS`] without a healthy session so
+//! offline door control stays functional across transient outages.
 
 use embassy_futures::select::{select, Either};
 use embassy_net::dns::DnsQueryType;
 use embassy_net::tcp::TcpSocket;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
-use embassy_time::{Duration, Timer};
+use embassy_time::{with_timeout, Duration, Instant, Timer};
 use garagedoor_core::mqtt;
-use garagedoor_core::wifi::RejoinCounter;
-use garagedoor_core::{DoorCommand, DoorState};
-use minimq::{
-    Buffers, ConfigBuilder, ConnectEvent, Connection, Publication, QoS, Session, TopicFilter,
+use garagedoor_core::wifi::{
+    mqtt_session_healthy, NoIpWatchdog, RejoinCounter, DHCP_TIMEOUT_MS, MQTT_IO_TIMEOUT_MS,
+    MQTT_POLL_TIMEOUT_MS, MQTT_TCP_KEEPALIVE_MS, MQTT_TCP_TIMEOUT_MS, NO_IP_REBOOT_MS,
 };
+use garagedoor_core::{DoorCommand, DoorState};
+use minimq::{Buffers, ConfigBuilder, Connection, Publication, QoS, Session, TopicFilter};
 
 use crate::actuator::DOOR_CMD_CHANNEL;
 use crate::radio::NetStack;
@@ -39,8 +41,9 @@ const KEEPALIVE_SECS: u16 = 60;
 /// Broker port used when `secrets::MQTT_BROKER` omits one.
 const DEFAULT_BROKER_PORT: u16 = 1883;
 
-/// Bounds the TCP handshake only; cleared once connected so the idle socket is
-/// not torn down between MQTT keepalive pings (minimq services keepalive itself).
+/// Bounds the initial TCP handshake; once connected, the socket switches to
+/// [`MQTT_TCP_KEEPALIVE_MS`] and [`MQTT_TCP_TIMEOUT_MS`] so half-open idle TCP
+/// connections and blackholed MQTT packets are detected at the transport layer.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 const INITIAL_BACKOFF: Duration = Duration::from_secs(1);
@@ -75,6 +78,10 @@ enum Action {
 
 fn is_open(state: DoorState) -> bool {
     state == DoorState::Open
+}
+
+fn now_ms() -> u64 {
+    Instant::now().as_millis()
 }
 
 /// Split `mqtt://<host>[:<port>]` into host and port, defaulting the port.
@@ -120,27 +127,80 @@ fn classify(topic: &str, payload: &[u8]) -> Action {
     }
 }
 
+/// Publish `payload` to `topic` with a bounded timeout, returning `false` if the
+/// transport publish fails or times out.
+async fn publish_payload<'buf, IO: minimq::Io>(
+    conn: &mut Connection<'_, 'buf, IO>,
+    topic: &str,
+    payload: &str,
+) -> bool {
+    let publication = Publication::bytes(topic, payload.as_bytes()).qos(QoS::AtMostOnce);
+    match with_timeout(
+        Duration::from_millis(MQTT_IO_TIMEOUT_MS),
+        conn.publish(publication),
+    )
+    .await
+    {
+        Ok(Ok(_)) => true,
+        Ok(Err(err)) => {
+            defmt::warn!(
+                "mqtt: publish to '{}' failed: {:?}",
+                topic,
+                defmt::Debug2Format(&err)
+            );
+            false
+        }
+        Err(_) => {
+            defmt::warn!("mqtt: publish to '{}' timed out", topic);
+            false
+        }
+    }
+}
+
 /// Format and publish `{"open":<bool>}` on `garagedoor/onchange`.
 async fn publish_state<'buf, IO: minimq::Io>(
     conn: &mut Connection<'_, 'buf, IO>,
     state: DoorState,
-) {
+) -> bool {
     let mut buf = [0u8; PAYLOAD_MAX];
-    match mqtt::format_onchange(&mut buf, is_open(state)) {
-        Ok(payload) => {
-            let publication =
-                Publication::bytes(mqtt::TOPIC_ONCHANGE, payload.as_bytes()).qos(QoS::AtMostOnce);
-            if let Err(err) = conn.publish(publication).await {
-                defmt::warn!(
-                    "mqtt: onchange publish failed: {:?}",
-                    defmt::Debug2Format(&err)
-                );
-            } else {
-                defmt::info!("mqtt: onchange published, open={}", is_open(state));
-            }
-        }
-        Err(_) => defmt::warn!("mqtt: onchange payload truncated"),
+    let Ok(payload) = mqtt::format_onchange(&mut buf, is_open(state)) else {
+        defmt::warn!("mqtt: onchange payload truncated");
+        return false;
+    };
+    let ok = publish_payload(conn, mqtt::TOPIC_ONCHANGE, payload).await;
+    if ok {
+        defmt::info!("mqtt: onchange published, open={}", is_open(state));
     }
+    ok
+}
+
+/// Format and publish a correlated status response on `garagedoor/status/response`.
+///
+/// Returns `false` only when the underlying MQTT transport publish fails or
+/// times out (indicating the session should be torn down); malformed UUIDs or
+/// oversized payloads are logged and discarded without dropping the session.
+async fn publish_status_response<'buf, IO: minimq::Io>(
+    conn: &mut Connection<'_, 'buf, IO>,
+    current: Option<DoorState>,
+    uuid_bytes: &[u8],
+) -> bool {
+    let open = match current {
+        Some(state) => is_open(state),
+        None => {
+            defmt::warn!("mqtt: status before state known; replying closed");
+            false
+        }
+    };
+    let Ok(uuid) = core::str::from_utf8(uuid_bytes) else {
+        defmt::warn!("mqtt: status uuid not valid utf8; discarding");
+        return true;
+    };
+    let mut buf = [0u8; PAYLOAD_MAX];
+    let Ok(payload) = mqtt::format_status_response(&mut buf, uuid, open, crate::VERSION) else {
+        defmt::warn!("mqtt: status response payload truncated");
+        return true;
+    };
+    publish_payload(conn, mqtt::TOPIC_STATUS_RESPONSE, payload).await
 }
 
 /// Wait out the current backoff and double it, capped at [`MAX_BACKOFF`].
@@ -149,15 +209,141 @@ async fn backoff_wait(backoff: &mut Duration) {
     *backoff = core::cmp::min(*backoff * 2, MAX_BACKOFF);
 }
 
+/// Reset the MCU if no healthy MQTT session has been established within
+/// [`NO_IP_REBOOT_MS`] and no OTA flash write is in progress.
+fn maybe_reboot(watchdog: &NoIpWatchdog) {
+    if watchdog.reboot_due(now_ms()) && !crate::watchdog::is_ota_flashing() {
+        defmt::error!(
+            "mqtt: no healthy session for {}s; resetting MCU",
+            NO_IP_REBOOT_MS / 1000
+        );
+        crate::watchdog::trigger_reset();
+    }
+}
+
 /// Record one failed connect attempt and wait out the backoff. After repeated
 /// failures the link is assumed associated-but-dead and a Wi-Fi rejoin is
-/// requested, since the link state alone never reports that condition.
-async fn fail_backoff(backoff: &mut Duration, rejoin: &mut RejoinCounter) {
+/// requested, since the link state alone never reports that condition. If no
+/// healthy MQTT session has been established within [`NO_IP_REBOOT_MS`], reset
+/// the MCU to recover the radio/network stack.
+async fn fail_backoff(backoff: &mut Duration, rejoin: &mut RejoinCounter, watchdog: &NoIpWatchdog) {
+    maybe_reboot(watchdog);
     if rejoin.failure() {
         defmt::warn!("mqtt: repeated connect failures; requesting Wi-Fi rejoin");
         WIFI_REJOIN_SIGNAL.signal(());
     }
     backoff_wait(backoff).await;
+}
+
+/// Resolve `host` via DNS with a bounded timeout.
+async fn resolve_broker(stack: NetStack, host: &str) -> Option<embassy_net::IpAddress> {
+    match with_timeout(
+        Duration::from_millis(MQTT_IO_TIMEOUT_MS),
+        stack.dns_query(host, DnsQueryType::A),
+    )
+    .await
+    {
+        Ok(Ok(addrs)) => match addrs.first() {
+            Some(addr) => Some(*addr),
+            None => {
+                defmt::warn!("mqtt: broker '{}' resolved to no addresses", host);
+                None
+            }
+        },
+        Ok(Err(err)) => {
+            defmt::warn!(
+                "mqtt: DNS lookup for '{}' failed: {:?}",
+                host,
+                defmt::Debug2Format(&err)
+            );
+            None
+        }
+        Err(_) => {
+            defmt::warn!("mqtt: DNS lookup for '{}' timed out", host);
+            None
+        }
+    }
+}
+
+/// Drive an established MQTT session until a poll or publish fails.
+async fn run_session<'buf, IO: minimq::Io>(
+    conn: &mut Connection<'_, 'buf, IO>,
+    current: &mut Option<DoorState>,
+    backoff: &mut Duration,
+    rejoin: &mut RejoinCounter,
+    watchdog: &mut NoIpWatchdog,
+) {
+    let connected_at_ms = now_ms();
+    let mut idle_polls: u32 = 0;
+
+    loop {
+        crate::watchdog::note_telemetry_alive();
+        // The inbound publish borrows `conn`; scope it so the borrow ends
+        // before any `conn.publish(...)` below.
+        let action = {
+            let next = select(
+                with_timeout(Duration::from_millis(MQTT_POLL_TIMEOUT_MS), conn.poll()),
+                DOOR_STATE_SIGNAL.wait(),
+            )
+            .await;
+            match next {
+                Either::First(Ok(Ok(Some(message)))) => {
+                    *backoff = INITIAL_BACKOFF;
+                    rejoin.success();
+                    watchdog.note_last_good(now_ms());
+                    if message.retained() {
+                        defmt::warn!("mqtt: ignoring retained message on '{}'", message.topic());
+                        Action::Unknown
+                    } else {
+                        classify(message.topic(), message.payload())
+                    }
+                }
+                Either::First(Ok(Ok(None))) => {
+                    idle_polls = idle_polls.saturating_add(1);
+                    let now = now_ms();
+                    if mqtt_session_healthy(connected_at_ms, now, idle_polls, false) {
+                        *backoff = INITIAL_BACKOFF;
+                        rejoin.success();
+                        watchdog.note_last_good(now);
+                    }
+                    Action::Unknown
+                }
+                Either::First(Ok(Err(err))) => {
+                    defmt::warn!("mqtt: poll failed: {:?}", defmt::Debug2Format(&err));
+                    Action::Disconnected
+                }
+                Either::First(Err(_)) => {
+                    defmt::warn!("mqtt: poll timed out; disconnecting");
+                    Action::Disconnected
+                }
+                Either::Second(state) => Action::StateChange(state),
+            }
+        };
+
+        match action {
+            Action::Disconnected => break,
+            Action::Trigger => {
+                DOOR_CMD_CHANNEL.send(DoorCommand::Trigger).await;
+                defmt::info!("mqtt: door trigger received");
+            }
+            Action::Reset => {
+                RESET_REQUEST_SIGNAL.signal(());
+                defmt::info!("mqtt: OTA reset requested");
+            }
+            Action::StateChange(state) => {
+                *current = Some(state);
+                if !publish_state(conn, state).await {
+                    break;
+                }
+            }
+            Action::Status { uuid, uuid_len } => {
+                if !publish_status_response(conn, *current, &uuid[..uuid_len]).await {
+                    break;
+                }
+            }
+            Action::Unknown => {}
+        }
+    }
 }
 
 /// MQTT telemetry and control task.
@@ -185,73 +371,101 @@ pub async fn telemetry_task(stack: NetStack) -> ! {
 
     let mut backoff = INITIAL_BACKOFF;
     let mut rejoin = RejoinCounter::new();
+    let mut watchdog = NoIpWatchdog::new();
     let mut current: Option<DoorState> = None;
 
     loop {
-        stack.wait_config_up().await;
+        crate::watchdog::note_telemetry_alive();
+        if with_timeout(
+            Duration::from_millis(DHCP_TIMEOUT_MS),
+            stack.wait_config_up(),
+        )
+        .await
+        .is_err()
+        {
+            maybe_reboot(&watchdog);
+            continue;
+        }
 
         let (host, port) = parse_broker(secrets::MQTT_BROKER);
-        let addr = match stack.dns_query(host, DnsQueryType::A).await {
-            Ok(addrs) => match addrs.first() {
-                Some(addr) => *addr,
-                None => {
-                    defmt::warn!("mqtt: broker '{}' resolved to no addresses", host);
-                    fail_backoff(&mut backoff, &mut rejoin).await;
-                    continue;
-                }
-            },
-            Err(err) => {
-                defmt::warn!(
-                    "mqtt: DNS lookup for '{}' failed: {:?}",
-                    host,
-                    defmt::Debug2Format(&err)
-                );
-                fail_backoff(&mut backoff, &mut rejoin).await;
-                continue;
-            }
+        let Some(addr) = resolve_broker(stack, host).await else {
+            fail_backoff(&mut backoff, &mut rejoin, &watchdog).await;
+            continue;
         };
 
         let mut socket = TcpSocket::new(stack, &mut tcp_rx, &mut tcp_tx);
         socket.set_timeout(Some(CONNECT_TIMEOUT));
-        if let Err(err) = socket.connect((addr, port)).await {
-            defmt::warn!(
-                "mqtt: TCP connect to {}:{} failed: {:?}",
-                host,
-                port,
-                defmt::Debug2Format(&err)
-            );
-            fail_backoff(&mut backoff, &mut rejoin).await;
-            continue;
+        match with_timeout(
+            Duration::from_millis(MQTT_IO_TIMEOUT_MS),
+            socket.connect((addr, port)),
+        )
+        .await
+        {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) => {
+                defmt::warn!(
+                    "mqtt: TCP connect to {}:{} failed: {:?}",
+                    host,
+                    port,
+                    defmt::Debug2Format(&err)
+                );
+                fail_backoff(&mut backoff, &mut rejoin, &watchdog).await;
+                continue;
+            }
+            Err(_) => {
+                defmt::warn!("mqtt: TCP connect to {}:{} timed out", host, port);
+                fail_backoff(&mut backoff, &mut rejoin, &watchdog).await;
+                continue;
+            }
         }
-        socket.set_timeout(None);
+        socket.set_keep_alive(Some(Duration::from_millis(MQTT_TCP_KEEPALIVE_MS)));
+        socket.set_timeout(Some(Duration::from_millis(MQTT_TCP_TIMEOUT_MS)));
 
-        let mut conn = match session.connect(socket).await {
-            Ok(conn) => conn,
-            Err(err) => {
+        let mut conn = match with_timeout(
+            Duration::from_millis(MQTT_IO_TIMEOUT_MS),
+            session.connect(socket),
+        )
+        .await
+        {
+            Ok(Ok(conn)) => conn,
+            Ok(Err(err)) => {
                 defmt::warn!(
                     "mqtt: session connect failed: {:?}",
                     defmt::Debug2Format(&err)
                 );
-                fail_backoff(&mut backoff, &mut rejoin).await;
+                fail_backoff(&mut backoff, &mut rejoin, &watchdog).await;
+                continue;
+            }
+            Err(_) => {
+                defmt::warn!("mqtt: session connect timed out");
+                fail_backoff(&mut backoff, &mut rejoin, &watchdog).await;
                 continue;
             }
         };
-        backoff = INITIAL_BACKOFF;
-        rejoin.success();
         defmt::info!("mqtt: connected to {}:{}", host, port);
 
-        if conn.connect_event() == ConnectEvent::Connected {
-            let topics = [
-                TopicFilter::new(mqtt::TOPIC_TRIGGER),
-                TopicFilter::new(mqtt::TOPIC_STATUS),
-                TopicFilter::new(mqtt::TOPIC_RESET),
-            ];
-            if let Err(err) = conn.subscribe(&topics, &[]).await {
+        let topics = [
+            TopicFilter::new(mqtt::TOPIC_TRIGGER),
+            TopicFilter::new(mqtt::TOPIC_STATUS),
+            TopicFilter::new(mqtt::TOPIC_RESET),
+        ];
+        match with_timeout(
+            Duration::from_millis(MQTT_IO_TIMEOUT_MS),
+            conn.subscribe(&topics, &[]),
+        )
+        .await
+        {
+            Ok(Ok(_)) => defmt::info!("mqtt: subscribed to command topics"),
+            Ok(Err(err)) => {
                 defmt::warn!("mqtt: subscribe failed: {:?}", defmt::Debug2Format(&err));
-                fail_backoff(&mut backoff, &mut rejoin).await;
+                fail_backoff(&mut backoff, &mut rejoin, &watchdog).await;
                 continue;
             }
-            defmt::info!("mqtt: subscribed to command topics");
+            Err(_) => {
+                defmt::warn!("mqtt: subscribe timed out");
+                fail_backoff(&mut backoff, &mut rejoin, &watchdog).await;
+                continue;
+            }
         }
 
         // Refresh the cached state and publish the legacy initial snapshot.
@@ -259,89 +473,25 @@ pub async fn telemetry_task(stack: NetStack) -> ! {
             current = Some(state);
         }
         if let Some(state) = current {
-            publish_state(&mut conn, state).await;
-        }
-
-        loop {
-            // The inbound publish borrows `conn`; scope it so the borrow ends
-            // before any `conn.publish(...)` below.
-            let action = {
-                let next = select(conn.recv(), DOOR_STATE_SIGNAL.wait()).await;
-                match next {
-                    Either::First(Ok(message)) => {
-                        if message.retained() {
-                            defmt::warn!(
-                                "mqtt: ignoring retained message on '{}'",
-                                message.topic()
-                            );
-                            Action::Unknown
-                        } else {
-                            classify(message.topic(), message.payload())
-                        }
-                    }
-                    Either::First(Err(err)) => {
-                        defmt::warn!("mqtt: receive failed: {:?}", defmt::Debug2Format(&err));
-                        Action::Disconnected
-                    }
-                    Either::Second(state) => Action::StateChange(state),
-                }
-            };
-
-            match action {
-                Action::Disconnected => break,
-                Action::Trigger => {
-                    DOOR_CMD_CHANNEL.send(DoorCommand::Trigger).await;
-                    defmt::info!("mqtt: door trigger received");
-                }
-                Action::Reset => {
-                    RESET_REQUEST_SIGNAL.signal(());
-                    defmt::info!("mqtt: OTA reset requested");
-                }
-                Action::StateChange(state) => {
-                    current = Some(state);
-                    publish_state(&mut conn, state).await;
-                }
-                Action::Status { uuid, uuid_len } => {
-                    let open = match current {
-                        Some(state) => is_open(state),
-                        None => {
-                            defmt::warn!("mqtt: status before state known; replying closed");
-                            false
-                        }
-                    };
-                    let uuid = match core::str::from_utf8(&uuid[..uuid_len]) {
-                        Ok(uuid) => uuid,
-                        Err(_) => {
-                            defmt::warn!("mqtt: status uuid not valid utf8; discarding");
-                            continue;
-                        }
-                    };
-
-                    let mut buf = [0u8; PAYLOAD_MAX];
-                    match mqtt::format_status_response(&mut buf, uuid, open, crate::VERSION) {
-                        Ok(payload) => {
-                            let publication =
-                                Publication::bytes(mqtt::TOPIC_STATUS_RESPONSE, payload.as_bytes())
-                                    .qos(QoS::AtMostOnce);
-                            if let Err(err) = conn.publish(publication).await {
-                                defmt::warn!(
-                                    "mqtt: status response publish failed: {:?}",
-                                    defmt::Debug2Format(&err)
-                                );
-                                break;
-                            }
-                        }
-                        Err(_) => defmt::warn!("mqtt: status response payload truncated"),
-                    }
-                }
-                Action::Unknown => {}
+            if !publish_state(&mut conn, state).await {
+                fail_backoff(&mut backoff, &mut rejoin, &watchdog).await;
+                continue;
             }
         }
+
+        run_session(
+            &mut conn,
+            &mut current,
+            &mut backoff,
+            &mut rejoin,
+            &mut watchdog,
+        )
+        .await;
 
         defmt::info!(
             "mqtt: connection lost; reconnecting in {}s",
             backoff.as_secs()
         );
-        fail_backoff(&mut backoff, &mut rejoin).await;
+        fail_backoff(&mut backoff, &mut rejoin, &watchdog).await;
     }
 }

@@ -1,5 +1,6 @@
 #![no_std]
 #![no_main]
+#![cfg_attr(feature = "selftest-broken", allow(unreachable_code, unused_variables))]
 
 use defmt_rtt as _;
 use panic_probe as _;
@@ -127,6 +128,7 @@ async fn main(spawner: Spawner) {
     spawner.spawn(defmt::unwrap!(beacon::beacon_task(control)));
     spawner.spawn(defmt::unwrap!(wifi::wifi_supervisor_task(control, stack)));
     spawner.spawn(defmt::unwrap!(telemetry::telemetry_task(stack)));
+    watchdog::arm_task_supervision();
 
     // Best-effort network check, then confirm or revert.
     if is_swap {
